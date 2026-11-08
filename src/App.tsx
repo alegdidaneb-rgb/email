@@ -17,6 +17,7 @@ import {
 } from './lib/eth'
 import { formatCompact, relativeTime, shortenAddress, uid } from './lib/format'
 import { networkOf, NETWORK_LIST } from './lib/networks'
+import { getRpcReports, rpcLabel, type RpcReport } from './lib/transport'
 import { capAlerts, capHistory, emptyDb, loadDb, parseDb, saveDb } from './lib/storage'
 import type {
   AlertEntry,
@@ -44,7 +45,10 @@ export default function App() {
   const [db, setDb] = useState<DB>(() => loadDb())
   const dbRef = useRef(db)
   const [checkingIds, setCheckingIds] = useState<string[]>([])
+  const [readFailedIds, setReadFailedIds] = useState<string[]>([])
   const [rpcError, setRpcError] = useState<string | null>(null)
+  const [rpcReports, setRpcReports] = useState<RpcReport[]>([])
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [filter, setFilter] = useState<Filter>('all')
   const [networkFilter, setNetworkFilter] = useState<NetworkFilter>('all')
@@ -83,7 +87,7 @@ export default function App() {
   }, [])
 
   const refresh = useCallback(
-    async (ids?: string[]) => {
+    async (ids?: string[], pass = 1) => {
       const snapshot = dbRef.current
       const targets = ids
         ? snapshot.wallets.filter((wallet) => ids.includes(wallet.id))
@@ -129,12 +133,29 @@ export default function App() {
       })
 
       if (values.size === 0) {
+        // One quiet retry: most failures are a transient 429 or a stalled host.
+        if (pass < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 900))
+          await refresh(ids, pass + 1)
+          return
+        }
+        setRpcReports(getRpcReports())
+        setReadFailedIds(targets.map((target) => target.id))
         setRpcError(
-          'No RPC endpoint answered for these networks. Use “Test connection” below to see which endpoint is blocked, or set your own under Settings.',
+          'No RPC endpoint answered for these networks. Open “Details” to see every endpoint that was tried, or set your own under Settings.',
         )
         setCheckingIds([])
         return
       }
+
+      const failedWallets = targets
+        .filter((target) => {
+          const own = jobs.filter((job) => job.walletId === target.id)
+          return own.length > 0 && own.every((job) => !values.has(jobKey(job.walletId, job.tokenId)))
+        })
+        .map((target) => target.id)
+      setReadFailedIds(failedWallets)
+      setRpcReports(getRpcReports())
 
       const failed = jobs.length - values.size
       if (failed > 0) {
@@ -548,6 +569,13 @@ export default function App() {
           <button
             type="button"
             className="btn btn-ghost btn-xs"
+            onClick={() => setDiagnosticsOpen((open) => !open)}
+          >
+            {diagnosticsOpen ? 'Hide details' : 'Details'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
             onClick={() => setSettingsOpen(true)}
           >
             Test connection
@@ -560,6 +588,31 @@ export default function App() {
           >
             <Icon name="x" size={14} />
           </button>
+        </div>
+      )}
+
+      {rpcError && diagnosticsOpen && rpcReports.length > 0 && (
+        <div className="diagnostics">
+          {rpcReports.map((report) => (
+            <div className="diag-block" key={report.network}>
+              <p className="diag-head">
+                <strong>{networkOf(report.network).name}</strong>
+                {report.via
+                  ? ` — answered by ${rpcLabel(report.via)}`
+                  : ' — no endpoint answered'}
+              </p>
+              <ul className="diag-list">
+                {report.attempts.map((attempt) => (
+                  <li key={attempt.url} className={attempt.ok ? 'is-ok' : 'is-bad'}>
+                    <span className="diag-url">{rpcLabel(attempt.url)}</span>
+                    <span className="diag-meta">
+                      {attempt.ms}ms{attempt.error ? ` · ${attempt.error}` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
       )}
 
@@ -686,6 +739,7 @@ export default function App() {
                   wallet={wallet}
                   toleranceNative={Number(db.settings.toleranceNative) || 0}
                   checking={checkingIds.includes(wallet.id)}
+                  readFailed={readFailedIds.includes(wallet.id)}
                   onRefresh={() => void refresh([wallet.id])}
                   onUpdate={(patch) => updateWallet(wallet.id, patch)}
                   onRemove={() => removeWallet(wallet)}

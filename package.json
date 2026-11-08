@@ -10,7 +10,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc -b --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "test:relay": "node scripts/test-relay.mjs"
+    "test:relay": "node scripts/test-relay.mjs",
+    "test:transport": "node scripts/test-transport.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

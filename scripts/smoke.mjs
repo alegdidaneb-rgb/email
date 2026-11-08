@@ -70,6 +70,7 @@ function answer(call) {
 }
 
 let relayCalls = 0
+let blockAll = false
 
 function rpcResponse(init) {
   const payload = JSON.parse(init.body)
@@ -84,6 +85,7 @@ function rpcResponse(init) {
 // Simulates a strict browser: every public RPC host is blocked (CORS/firewall),
 // so only the locally configured endpoint and the same-origin relay can answer.
 globalThis.fetch = async (url, init) => {
+  if (blockAll) throw new TypeError('Failed to fetch')
   const target = String(url)
   if (target.startsWith('/api/rpc')) {
     relayCalls += 1
@@ -295,6 +297,27 @@ check('shortfall shown', cardFor('Base treasury')?.textContent?.includes('Short 
 clickButton(cardFor('Base treasury'), 'Assign current amount')
 await sleep(400)
 check('native reconcile clears drift', cardFor('Base treasury')?.textContent?.includes('Within'))
+
+/* total outage: nothing answers, anywhere */
+blockAll = true
+clickButton(window.document, 'Check now')
+await sleep(2600)
+
+check('outage is explained in the banner', text().includes('No RPC endpoint answered'))
+check(
+  'failed read is flagged on the card',
+  text().includes("Couldn't reach an RPC endpoint"),
+)
+clickButton(window.document, 'Details')
+await sleep(150)
+check('diagnostics name the attempted endpoints', text().includes('built-in relay'))
+
+/* recovery */
+blockAll = false
+clickButton(window.document, 'Check now')
+await sleep(1400)
+check('recovers once an endpoint answers again', !text().includes('No RPC endpoint answered'))
+check('card failure flag cleared', !text().includes("Couldn't reach an RPC endpoint"))
 
 window.confirm = () => true
 clickButton(cardFor('Base treasury'), 'Remove')

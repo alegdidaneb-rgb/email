@@ -46,10 +46,13 @@ does not create 25 ETH — it produces a red "short by 25 ETH" flag, which is th
 - **Custom amount per asset** — native and each token independently; edit any time.
 - **Drift detection** — "in line", "below assigned", "above assigned", with the exact gap and
   one-click `Assign current amount` to re-baseline after an expected move.
-- **Live balances that always land** — the browser tries a per-network pool of verified keyless
-  RPC endpoints, then falls back to a **same-origin relay** (`/api/rpc`) that runs as a Vercel
-  serverless function. CORS, firewalls and rate limits can no longer make a read fail silently.
-  Point any network at your own node instead if you prefer.
+- **Live balances that always land** — every balance read races a per-network pool of verified
+  keyless RPC endpoints *and* a **same-origin relay** (`/api/rpc`, a Vercel serverless function),
+  and takes whichever answers first. CORS, firewalls, rate limits and dead providers can't make a
+  read fail silently. Point any network at your own node instead if you prefer.
+- **Self-explaining failures** — one quiet automatic retry, a per-wallet "couldn't read" flag, a
+  banner that names every endpoint it tried with latency and error, and Settings → *Test
+  connections* for a manual probe.
 - **Connection test** — Settings → *Test connections* asks each network for its chain id the same
   way a balance read does and shows which endpoint answered, in milliseconds.
 - **Activity log + desktop notifications** — one entry per real movement, tagged with network and
@@ -67,16 +70,18 @@ npm run dev        # http://localhost:5173
 npm run build      # production bundle in dist/
 npm run smoke      # headless jsdom test against a mocked RPC
 npm run test:relay # unit test for the same-origin RPC relay
+npm run test:transport # unit test for the racing JSON-RPC transport
 ```
 
 ## How a reading works
 
 1. The address is validated and stored in EIP-55 checksummed form, alongside its network.
 2. One JSON-RPC call per asset is made from your browser — `eth_getBalance` for the native coin,
-   `eth_call` (`balanceOf`) for each tracked token — through that network's endpoint pool
-   (PublicNode, dRPC, 1RPC, Flashbots, merkle, official L2 gateways, Sepolia endpoints). If every
-   direct host is blocked, the call goes to `/api/rpc` on this app's own origin, which relays it
-   server-side to the same pool.
+   `eth_call` (`balanceOf`) for each tracked token. The call is **raced** across that network's
+   endpoint pool (PublicNode, dRPC, 1RPC, Flashbots, merkle, official L2 gateways, Sepolia) and
+   `/api/rpc` on this app's own origin, which relays server-side to the same pool; the first
+   answer wins and the losers are ignored. If nothing answers, the app retries once quietly, then
+   reports exactly what it tried.
 3. Each balance is compared to its assigned amount with the matching tolerance applied.
 4. Status changes are written to the activity log (and notified, if enabled). Status is persisted,
    so you get one alert per real move, not one per refresh.
@@ -96,6 +101,7 @@ src/
   App.tsx                 state, multi-asset refresh, alerts, stats
   lib/networks.ts         per-network config: viem chain, RPC pool, explorer, faucet
   lib/rpcUpstreams.ts     re-export of the shared endpoint list
+  lib/transport.ts        racing JSON-RPC transport + per-network diagnostics
   lib/eth.ts              clients, native + ERC-20 reads, validation, status logic
   lib/storage.ts          versioned persistence, v1 -> v2 migration, import validation
   lib/format.ts           amount/address/time formatting
@@ -107,8 +113,9 @@ src/
     Sparkline.tsx         native balance history with assigned-amount line
 api/rpc.js                same-origin JSON-RPC relay (Vercel function)
 shared/rpc-upstreams.js   one endpoint list for app, dev relay and serverless relay
-scripts/smoke.mjs         end-to-end render test with a mocked RPC (36 checks)
+scripts/smoke.mjs         end-to-end render test with a mocked RPC (41 checks)
 scripts/test-relay.mjs    relay unit test: failover, validation, health probe (14 checks)
+scripts/test-transport.mjs racing transport unit test: first-win, errors, custom RPC (14 checks)
 ```
 
 ## Limits worth knowing

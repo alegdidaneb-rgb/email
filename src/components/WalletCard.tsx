@@ -17,6 +17,7 @@ interface Props {
   wallet: Wallet
   toleranceNative: number
   checking: boolean
+  readFailed: boolean
   onRefresh: () => void
   onUpdate: (patch: Partial<Wallet>) => void
   onRemove: () => void
@@ -38,6 +39,7 @@ export function WalletCard({
   wallet,
   toleranceNative,
   checking,
+  readFailed,
   onRefresh,
   onUpdate,
   onRemove,
@@ -257,6 +259,14 @@ export function WalletCard({
               </span>
             )}
           </div>
+
+          {readFailed && (
+            <p className="read-failed">
+              <Icon name="alert" size={13} /> Couldn't reach an RPC endpoint for{' '}
+              {config.name} just now — the last known balance is shown above. It retries
+              automatically.
+            </p>
+          )}
 
           {wallet.history.length > 1 && (
             <Sparkline history={wallet.history} expected={expected} />

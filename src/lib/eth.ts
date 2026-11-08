@@ -1,15 +1,7 @@
-import {
-  createPublicClient,
-  erc20Abi,
-  fallback,
-  formatEther,
-  formatUnits,
-  getAddress,
-  http,
-  type Chain,
-} from 'viem'
+import { createPublicClient, erc20Abi, formatEther, formatUnits, getAddress, type Chain } from 'viem'
 import { NETWORKS } from './networks'
 import { proxyUrl } from './rpcUpstreams'
+import { createTransport } from './transport'
 import type { AssetStatus, NetworkId } from './types'
 
 /**
@@ -19,17 +11,9 @@ import type { AssetStatus, NetworkId } from './types'
  */
 export function makeClient(network: NetworkId, customRpcUrl: string) {
   const config = NETWORKS[network] ?? NETWORKS.ethereum
-  // Direct endpoints first; the same-origin relay is the last resort so a
-  // blocked or CORS-hostile provider can never take reading offline.
-  const urls = customRpcUrl.trim()
-    ? [customRpcUrl.trim()]
-    : [...config.rpcUrls, proxyUrl(network)]
   return createPublicClient({
     chain: config.chain as Chain,
-    transport: fallback(
-      urls.map((url) => http(url, { timeout: 8_000, retryCount: 0 })),
-      { rank: false, retryCount: 0 },
-    ),
+    transport: createTransport(network, customRpcUrl),
   })
 }
 
