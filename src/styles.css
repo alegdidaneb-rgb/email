@@ -1649,3 +1649,65 @@ select.input {
     gap: 6px;
   }
 }
+
+/* ---------- testnets ---------- */
+
+.testnet-chip {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #d8b4fe;
+  background: rgba(168, 85, 247, 0.12);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.faucet-hint {
+  display: flex;
+  gap: 7px;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e3cdff;
+  background: rgba(168, 85, 247, 0.08);
+  border: 1px solid rgba(168, 85, 247, 0.22);
+}
+
+.faucet-hint svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #c084fc;
+}
+
+.faucet-hint a {
+  color: #e9d5ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.faucet-hint a:hover {
+  color: #fff;
+}
+
+.rpc-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #d8b4fe;
+  background: rgba(168, 85, 247, 0.12);
+  border: 1px solid rgba(168, 85, 247, 0.28);
+}
+
+select.input option,
+select.input optgroup {
+  background: #0c121b;
+  color: var(--text);
+}

@@ -635,7 +635,8 @@ export default function App() {
               <p>
                 Paste the address of a hardware wallet, exchange deposit or any cold wallet on
                 Ethereum, Base, Arbitrum, OP Mainnet or Polygon, then give it the amount it should
-                hold. Balances are read live and flagged the moment they no longer match.
+                hold. Balances are read live and flagged the moment they no longer match. No real
+                funds? Use Sepolia or Base Sepolia testnet ETH — free from a faucet.
               </p>
               <ul className="empty-points">
                 <li>

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { normalizeAddress, normalizeAmount } from '../lib/eth'
-import { networkOf, NETWORK_LIST } from '../lib/networks'
+import { networkOf, MAINNETS, TESTNETS } from '../lib/networks'
 import type { NetworkId, NewWalletInput } from '../lib/types'
 import { Icon } from './Icon'
 
@@ -76,13 +76,35 @@ export function WalletForm({ known, onAdd }: Props) {
             setError(null)
           }}
         >
-          {NETWORK_LIST.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name} · {item.nativeSymbol}
-            </option>
-          ))}
+          <optgroup label="Mainnets">
+            {MAINNETS.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} · {item.nativeSymbol}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="Testnets (free, valueless ETH)">
+            {TESTNETS.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} · {item.nativeSymbol}
+              </option>
+            ))}
+          </optgroup>
         </select>
       </label>
+
+      {config.testnet && (
+        <p className="faucet-hint">
+          <Icon name="alert" size={12} />
+          <span>
+            {config.name} ETH is free and worth nothing — grab some from a{' '}
+            <a href={config.faucet} target="_blank" rel="noreferrer noopener">
+              {config.name} faucet
+            </a>{' '}
+            and watch the assigned amount match for real.
+          </span>
+        </p>
+      )}
 
       <label className="field">
         <span className="field-label">Address</span>

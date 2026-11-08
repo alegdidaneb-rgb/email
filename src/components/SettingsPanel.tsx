@@ -218,6 +218,7 @@ export function SettingsPanel({
                   <span className="rpc-name">
                     <i style={{ background: network.accent }} aria-hidden="true" />
                     {network.name}
+                    {network.testnet && <span className="rpc-tag">testnet</span>}
                   </span>
                   <input
                     className="input input-compact mono"

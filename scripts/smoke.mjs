@@ -246,6 +246,26 @@ if (networkSelect) {
   await sleep(200)
 }
 
+/* testnet support */
+setValue(form.querySelector('select'), 'sepolia')
+await sleep(120)
+check('faucet hint shown for testnet', text().includes('faucet'))
+setValue(inputBy(form, '0x…'), ADDRESS)
+setValue(inputBy(form, 'Ledger cold storage'), 'Sepolia test')
+setValue(inputBy(form, '1.5'), '1')
+form.querySelector('button[type="submit"]').click()
+await sleep(600)
+
+const sepoliaCard = cardFor('Sepolia test')
+check('testnet wallet added', Boolean(sepoliaCard))
+check('testnet chip rendered', sepoliaCard?.textContent?.includes('testnet'))
+check('sepolia network named', sepoliaCard?.textContent?.includes('Sepolia'))
+check('sepolia balance read', sepoliaCard?.textContent?.includes('Matches'))
+check(
+  'testnet persisted',
+  (window.localStorage.getItem('watchvault.db.v1') ?? '').includes('"network":"sepolia"'),
+)
+
 /* native drift + reconcile + remove */
 nativeWei = 400_000_000_000_000_000n
 clickButton(window.document, 'Check now')

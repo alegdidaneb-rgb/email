@@ -128,6 +128,7 @@ export function WalletCard({
               <i style={{ background: config.accent }} aria-hidden="true" />
               {config.name}
             </span>
+            {config.testnet && <span className="testnet-chip">testnet</span>}
             <h3>{wallet.label}</h3>
           </div>
           <div className="wallet-address">

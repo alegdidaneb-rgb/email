@@ -1,4 +1,11 @@
-export type NetworkId = 'ethereum' | 'base' | 'arbitrum' | 'optimism' | 'polygon'
+export type NetworkId =
+  | 'ethereum'
+  | 'base'
+  | 'arbitrum'
+  | 'optimism'
+  | 'polygon'
+  | 'sepolia'
+  | 'baseSepolia'
 
 export type AssetStatus = 'unknown' | 'match' | 'below' | 'above'
 

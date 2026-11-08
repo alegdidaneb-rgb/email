@@ -1,11 +1,25 @@
 # WatchVault — watch-only wallets with an assigned amount
 
-WatchVault keeps a list of **view-only** addresses across **Ethereum, Base, Arbitrum One, OP
-Mainnet and Polygon**, plus the **ERC-20 tokens** held at those addresses. Every asset — the
-native coin and each token — carries **an amount you assign**, and the app reads the real balance
-from chain and tells you the moment it no longer matches.
+WatchVault keeps a list of **view-only** addresses across Ethereum and its L2s, plus the
+**ERC-20 tokens** held at those addresses. Every asset — the native coin and each token — carries
+**an amount you assign**, and the app reads the real balance from chain and tells you the moment it
+no longer matches.
 
 No private keys. No seed phrases. No signing. The app literally cannot move funds.
+
+## Networks
+
+| Mainnets | Native | | Testnets (free, valueless ETH) |
+| --- | --- | --- | --- |
+| Ethereum | ETH | | Sepolia |
+| Base | ETH | | Base Sepolia |
+| Arbitrum One | ETH | | |
+| OP Mainnet | ETH | | |
+| Polygon | POL | | |
+
+**Want to see it working with non-zero balances?** Pick Sepolia or Base Sepolia in the network
+dropdown, grab free ETH from the faucet link shown in the form, and set that as the assigned
+amount. Real on-chain reads, zero cost, and nothing that could be mistaken for actual funds.
 
 ## The idea
 
@@ -18,15 +32,15 @@ No private keys. No seed phrases. No signing. The app literally cannot move fund
 | —                                   | Keeps native balance history and a per-wallet sparkline               |
 
 The assigned amount is a **reference target**, not a display override: every balance shown is the
-real on-chain value, so the numbers on screen can be trusted. (If you need a screenshot-friendly
-fake balance, this app deliberately will not do that.)
+real on-chain value, so the numbers on screen can be trusted. Assigning 25 ETH to an empty wallet
+does not create 25 ETH — it produces a red "short by 25 ETH" flag, which is the point.
 
 ## Features
 
 - **Watch-only by construction** — the data model stores addresses, labels, notes and amounts.
   There is nowhere to put a key.
-- **Multi-chain** — Ethereum, Base, Arbitrum One, OP Mainnet, Polygon. The native symbol follows
-  the network (`ETH`, `POL`), and the same address can be watched on several networks at once.
+- **Mainnets + testnets** — the seven networks above; the native symbol and explorer follow the
+  network, and the same address can be watched on several networks at once.
 - **ERC-20 tracking per wallet** — paste a token contract, WatchVault detects symbol and decimals
   on chain, then tracks the balance against its own assigned amount.
 - **Custom amount per asset** — native and each token independently; edit any time.
@@ -54,8 +68,8 @@ npm run smoke      # headless jsdom test against a mocked RPC
 
 1. The address is validated and stored in EIP-55 checksummed form, alongside its network.
 2. One JSON-RPC call per asset is made from your browser — `eth_getBalance` for the native coin,
-   `eth_call` (`balanceOf`) for each tracked token — through that network's endpoint pool:
-   publicnode, Cloudflare, llamarpc, drpc, 1rpc, ankr, and the official L2 gateways.
+   `eth_call` (`balanceOf`) for each tracked token — through that network's endpoint pool
+   (publicnode, Cloudflare, llamarpc, drpc, 1rpc, ankr, official L2 gateways, Sepolia endpoints).
 3. Each balance is compared to its assigned amount with the matching tolerance applied.
 4. Status changes are written to the activity log (and notified, if enabled). Status is persisted,
    so you get one alert per real move, not one per refresh.
@@ -73,7 +87,7 @@ npm run smoke      # headless jsdom test against a mocked RPC
 ```
 src/
   App.tsx                 state, multi-asset refresh, alerts, stats
-  lib/networks.ts         per-network config: viem chain, RPC pool, explorer
+  lib/networks.ts         per-network config: viem chain, RPC pool, explorer, faucet
   lib/eth.ts              clients, native + ERC-20 reads, validation, status logic
   lib/storage.ts          versioned persistence, v1 -> v2 migration, import validation
   lib/format.ts           amount/address/time formatting
@@ -83,13 +97,13 @@ src/
     SettingsPanel.tsx     tolerances, auto-refresh, notifications, per-network RPC, backup
     AlertLog.tsx          activity feed
     Sparkline.tsx         native balance history with assigned-amount line
-scripts/smoke.mjs         end-to-end render test with a mocked RPC (29 checks)
+scripts/smoke.mjs         end-to-end render test with a mocked RPC (35 checks)
 ```
 
 ## Limits worth knowing
 
 - ERC-20 only — no NFTs or DeFi positions yet.
-- Five networks; adding another is a single entry in `src/lib/networks.ts`.
+- Seven networks; adding another is a single entry in `src/lib/networks.ts`.
 - Token detection relies on `symbol()`/`decimals()`; rare contracts returning `bytes32` symbols
   fall back to a shortened contract address.
 - Public RPCs are rate limited — heavy polling across many wallets may get throttled; use your own

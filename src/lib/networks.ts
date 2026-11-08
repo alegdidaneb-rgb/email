@@ -1,4 +1,4 @@
-import { arbitrum, base, mainnet, optimism, polygon } from 'viem/chains'
+import { arbitrum, base, baseSepolia, mainnet, optimism, polygon, sepolia } from 'viem/chains'
 import type { Chain } from 'viem'
 import type { NetworkId } from './types'
 
@@ -13,6 +13,9 @@ export interface NetworkConfig {
   explorer: string
   explorerName: string
   accent: string
+  /** Test networks: real balances, zero value, free coins from a faucet. */
+  testnet: boolean
+  faucet?: string
 }
 
 export const NETWORKS: Record<NetworkId, NetworkConfig> = {
@@ -33,6 +36,7 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     explorer: 'https://etherscan.io',
     explorerName: 'Etherscan',
     accent: '#8b9dfa',
+    testnet: false,
   },
   base: {
     id: 'base',
@@ -50,6 +54,7 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     explorer: 'https://basescan.org',
     explorerName: 'Basescan',
     accent: '#4f7cff',
+    testnet: false,
   },
   arbitrum: {
     id: 'arbitrum',
@@ -67,6 +72,7 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     explorer: 'https://arbiscan.io',
     explorerName: 'Arbiscan',
     accent: '#3fb0e8',
+    testnet: false,
   },
   optimism: {
     id: 'optimism',
@@ -84,6 +90,7 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     explorer: 'https://optimistic.etherscan.io',
     explorerName: 'OP Explorer',
     accent: '#ff5a5a',
+    testnet: false,
   },
   polygon: {
     id: 'polygon',
@@ -101,6 +108,43 @@ export const NETWORKS: Record<NetworkId, NetworkConfig> = {
     explorer: 'https://polygonscan.com',
     explorerName: 'Polygonscan',
     accent: '#a97bff',
+    testnet: false,
+  },
+  sepolia: {
+    id: 'sepolia',
+    name: 'Sepolia',
+    short: 'Sepolia',
+    nativeSymbol: 'ETH',
+    chain: sepolia,
+    rpcUrls: [
+      'https://ethereum-sepolia-rpc.publicnode.com',
+      'https://sepolia.drpc.org',
+      'https://rpc.sepolia.org',
+      'https://1rpc.io/sepolia',
+    ],
+    explorer: 'https://sepolia.etherscan.io',
+    explorerName: 'Sepolia Etherscan',
+    accent: '#c084fc',
+    testnet: true,
+    faucet: 'https://cloud.google.com/application/web3/faucet/ethereum/sepolia',
+  },
+  baseSepolia: {
+    id: 'baseSepolia',
+    name: 'Base Sepolia',
+    short: 'Base Sepolia',
+    nativeSymbol: 'ETH',
+    chain: baseSepolia,
+    rpcUrls: [
+      'https://sepolia.base.org',
+      'https://base-sepolia-rpc.publicnode.com',
+      'https://base-sepolia.drpc.org',
+      'https://1rpc.io/base-sepolia',
+    ],
+    explorer: 'https://sepolia.basescan.org',
+    explorerName: 'Base Sepolia Explorer',
+    accent: '#818cf8',
+    testnet: true,
+    faucet: 'https://www.alchemy.com/faucets/base-sepolia',
   },
 }
 
@@ -110,7 +154,12 @@ export const NETWORK_LIST: NetworkConfig[] = [
   NETWORKS.arbitrum,
   NETWORKS.optimism,
   NETWORKS.polygon,
+  NETWORKS.sepolia,
+  NETWORKS.baseSepolia,
 ]
+
+export const MAINNETS: NetworkConfig[] = NETWORK_LIST.filter((network) => !network.testnet)
+export const TESTNETS: NetworkConfig[] = NETWORK_LIST.filter((network) => network.testnet)
 
 export function isNetworkId(value: unknown): value is NetworkId {
   return typeof value === 'string' && value in NETWORKS
