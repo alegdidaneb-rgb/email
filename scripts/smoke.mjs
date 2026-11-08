@@ -1,6 +1,7 @@
 /**
  * Headless smoke test: renders the real App in jsdom against a mocked JSON-RPC
- * endpoint and walks the main flows (add wallet -> read balance -> drift alert).
+ * endpoint and walks the main flows — v1 migration, multi-network wallets,
+ * ERC-20 tracking, drift detection and reconcile.
  *
  *   npm run smoke
  */
@@ -21,20 +22,30 @@ globalThis.window = window
 globalThis.document = window.document
 globalThis.HTMLElement = window.HTMLElement
 globalThis.HTMLInputElement = window.HTMLInputElement
+globalThis.HTMLSelectElement = window.HTMLSelectElement
 globalThis.Event = window.Event
 globalThis.KeyboardEvent = window.KeyboardEvent
 globalThis.localStorage = window.localStorage
 globalThis.Notification = undefined
-globalThis.IS_REACT_ACT_ENVIRONMENT = false
 
-Object.defineProperty(globalThis, 'navigator', {
-  value: window.navigator,
-  configurable: true,
-})
+Object.defineProperty(globalThis, 'navigator', { value: window.navigator, configurable: true })
 
 /* ---- mocked Ethereum RPC ------------------------------------------------ */
 
-let balanceWei = 1_000_000_000_000_000_000n // 1 ETH
+let nativeWei = 1_000_000_000_000_000_000n // 1 native unit
+let tokenRaw = 1_200_000_000n // 1,200.000000 USDC (6 decimals)
+
+const TOKEN_SYMBOL_SELECTOR = '0x95d89b41'
+const TOKEN_DECIMALS_SELECTOR = '0x313ce567'
+const TOKEN_BALANCE_SELECTOR = '0x70a08231'
+
+const word = (hex) => hex.padStart(64, '0')
+
+function encodeString(value) {
+  const hex = Buffer.from(value, 'utf8').toString('hex')
+  return `0x${word('20')}${word((hex.length / 2).toString(16))}${hex.padEnd(64, '0')}`
+}
+
 const rpcCalls = []
 
 function answer(call) {
@@ -43,9 +54,16 @@ function answer(call) {
     case 'eth_chainId':
       return '0x1'
     case 'eth_getBalance':
-      return `0x${balanceWei.toString(16)}`
+      return `0x${nativeWei.toString(16)}`
     case 'eth_blockNumber':
       return '0x1400000'
+    case 'eth_call': {
+      const data = String(call.params?.[0]?.data ?? '')
+      if (data.startsWith(TOKEN_DECIMALS_SELECTOR)) return `0x${word('6')}`
+      if (data.startsWith(TOKEN_SYMBOL_SELECTOR)) return encodeString('USDC')
+      if (data.startsWith(TOKEN_BALANCE_SELECTOR)) return `0x${word(tokenRaw.toString(16))}`
+      return `0x${word('0')}`
+    }
     default:
       return null
   }
@@ -53,11 +71,7 @@ function answer(call) {
 
 globalThis.fetch = async (_url, init) => {
   const payload = JSON.parse(init.body)
-  const handle = (call) => ({
-    jsonrpc: '2.0',
-    id: call.id ?? 1,
-    result: answer(call),
-  })
+  const handle = (call) => ({ jsonrpc: '2.0', id: call.id ?? 1, result: answer(call) })
   const body = Array.isArray(payload) ? payload.map(handle) : handle(payload)
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -65,25 +79,38 @@ globalThis.fetch = async (_url, init) => {
   })
 }
 
-/* ---- seed settings so the app uses the mock endpoint --------------------- */
+/* ---- seed a v1 database to exercise the migration ----------------------- */
 
 window.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0)
+
+const RPC = 'http://127.0.0.1:8545'
+const ADDRESS = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'
+const TOKEN = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+
 window.localStorage.setItem(
   'watchvault.db.v1',
   JSON.stringify({
     version: 1,
-    wallets: [],
-    settings: {
-      rpcUrl: 'http://127.0.0.1:8545',
-      toleranceEth: '0.0005',
-      autoRefreshSeconds: 0,
-      notifications: false,
-    },
+    wallets: [
+      {
+        id: 'legacy-1',
+        address: ADDRESS,
+        label: 'Cold storage',
+        expectedEth: '1',
+        note: 'Safe deposit box',
+        createdAt: 1,
+        lastEth: null,
+        lastCheckedAt: null,
+        status: 'unknown',
+        history: [],
+      },
+    ],
+    settings: { rpcUrl: RPC, toleranceEth: '0.0005', autoRefreshSeconds: 0, notifications: false },
     alerts: [],
   }),
 )
 
-/* ---- bundle + boot the app ---------------------------------------------- */
+/* ---- bundle + boot ------------------------------------------------------ */
 
 await esbuild.build({
   entryPoints: [resolve(root, 'src/main.tsx')],
@@ -99,9 +126,8 @@ await esbuild.build({
 
 const failures = []
 function check(name, condition, detail = '') {
-  if (condition) {
-    console.log(`  ✓ ${name}`)
-  } else {
+  if (condition) console.log(`  ✓ ${name}`)
+  else {
     failures.push(`${name}${detail ? ` — ${detail}` : ''}`)
     console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`)
   }
@@ -109,96 +135,137 @@ function check(name, condition, detail = '') {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const text = () => window.document.body.textContent ?? ''
+const cards = () => [...window.document.querySelectorAll('.wallet-card')]
+const cardFor = (label) => cards().find((card) => card.textContent?.includes(label))
 
-function setInput(el, value) {
-  const setter = Object.getOwnPropertyDescriptor(
-    window.HTMLInputElement.prototype,
-    'value',
-  ).set
-  setter.call(el, value)
-  el.dispatchEvent(new window.Event('input', { bubbles: true }))
+function setValue(el, value) {
+  const proto =
+    el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype
+  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value)
+  el.dispatchEvent(new window.Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }))
 }
 
-function findInput(placeholder) {
-  return [...window.document.querySelectorAll('input')].find(
-    (el) => el.placeholder === placeholder,
+function inputBy(rootEl, placeholder) {
+  return [...rootEl.querySelectorAll('input, select')].find(
+    (el) => el.placeholder === placeholder || el.getAttribute('aria-label') === placeholder,
   )
+}
+
+function clickButton(rootEl, label) {
+  const button = [...rootEl.querySelectorAll('button')].find((el) =>
+    el.textContent?.includes(label),
+  )
+  button?.click()
+  return Boolean(button)
 }
 
 console.log('\nWatchVault smoke test\n')
 
 await import(resolve(root, 'node_modules/.smoke/app.mjs'))
+await sleep(400)
+
+/* v1 -> v2 migration + first read */
+const stored = JSON.parse(window.localStorage.getItem('watchvault.db.v1') ?? '{}')
+check('legacy wallet rendered', text().includes('Cold storage'))
+check('migrated to v2', stored.version === 2, `version=${stored.version}`)
+check('legacy amount migrated', stored.wallets?.[0]?.expectedNative === '1')
+check('legacy wallet defaulted to Ethereum', stored.wallets?.[0]?.network === 'ethereum')
+check('legacy RPC carried into customRpcs', stored.settings?.customRpcs?.ethereum === RPC)
+check('native balance read', rpcCalls.includes('eth_getBalance'))
+check('legacy wallet matches assigned', cardFor('Cold storage')?.textContent?.includes('Matches'))
+check('network badge shown', text().includes('Ethereum'))
+
+/* network-aware duplicate protection */
+const form = window.document.querySelector('form.form-card')
+setValue(inputBy(form, '0x…'), ADDRESS)
+inputBy(form, 'Ledger cold storage') // label stays empty -> default
+setValue(inputBy(form, '1.5'), '1')
+form.querySelector('button[type="submit"]').click()
 await sleep(300)
+check('duplicate on same network rejected', text().includes('already watched on Ethereum'))
 
-/* empty state */
-check('renders empty state', text().includes('Add your first watch-only wallet'))
-check('renders wallet count 0', text().includes('Wallets watched'))
-
-/* add a wallet through the form */
-const addressInput = findInput('0x…')
-check('address field present', Boolean(addressInput))
-const labelInput = findInput('Ledger cold storage')
-const amountInput = findInput('1.5')
-const noteInput = findInput('Seed phrase in the safe deposit box')
-
-setInput(addressInput, '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045')
-setInput(labelInput, 'Cold storage')
-setInput(amountInput, '1')
-setInput(noteInput, 'Safe deposit box')
-
-window.document.querySelector('form button[type="submit"]').click()
+/* same address on another network is a different watch item */
+setValue(form.querySelector('select'), 'base')
+setValue(inputBy(form, '0x…'), ADDRESS)
+setValue(inputBy(form, 'Ledger cold storage'), 'Base treasury')
+setValue(inputBy(form, '1.5'), '1')
+form.querySelector('button[type="submit"]').click()
 await sleep(500)
 
-check('wallet card added', text().includes('Cold storage'))
-check('balance read over RPC', rpcCalls.includes('eth_getBalance'))
-check('balance rendered', /1\s*ETH/.test(text()), text().slice(0, 120))
-check('status matches', text().includes('Matches') || text().includes('Within'))
-check('note rendered', text().includes('Safe deposit box'))
-check('persisted to localStorage', (window.localStorage.getItem('watchvault.db.v1') ?? '').includes('Cold storage'))
+const baseCard = cardFor('Base treasury')
+check('wallet added on Base', Boolean(baseCard))
+check('Base badge rendered', baseCard?.textContent?.includes('Base'))
+check('base native balance read', baseCard?.textContent?.includes('Matches'))
+check('native symbol follows network', baseCard?.textContent?.includes('ETH'))
 
-/* reject a bad address */
-setInput(findInput('0x…'), '0x1234')
-setInput(findInput('1.5'), '2')
-window.document.querySelector('form button[type="submit"]').click()
-await sleep(120)
-check('invalid address rejected', text().includes('40 hex characters'))
-check('bad wallet not added', (text().match(/Cold storage/g) ?? []).length === 1)
+/* ERC-20 tracking */
+clickButton(baseCard, 'Track ERC-20 token')
+await sleep(80)
+setValue(inputBy(baseCard, 'Token contract 0x…'), TOKEN)
+setValue(inputBy(baseCard, 'Assigned amount'), '1200')
+baseCard.querySelector('form.token-form button[type="submit"]').click()
+await sleep(700)
 
-/* drift: funds leave the wallet */
-balanceWei = 400_000_000_000_000_000n // 0.4 ETH
-const checkNow = [...window.document.querySelectorAll('button')].find((b) =>
-  b.textContent?.includes('Check now'),
+check('token symbol detected', baseCard.textContent?.includes('USDC'))
+check('token balance read', baseCard.textContent?.includes('1,200'))
+check('token assigned shown', baseCard.textContent?.includes('assigned 1,200'))
+check('token in line', baseCard.textContent?.includes('in line'))
+check(
+  'token persisted',
+  (window.localStorage.getItem('watchvault.db.v1') ?? '').includes('"symbol":"USDC"'),
 )
-checkNow.click()
-await sleep(500)
 
-check('status flips to below', text().includes('Below assigned'))
-check('shortfall shown', text().includes('Short by'))
-check('alert logged', text().includes('funds moved out'))
-check('history recorded', (window.localStorage.getItem('watchvault.db.v1') ?? '').includes('"history":[{"t"'))
+/* token drift */
+tokenRaw = 900_000_000n // 900 USDC
+clickButton(window.document, 'Check now')
+await sleep(700)
 
-/* reconcile button */
-const reconcile = [...window.document.querySelectorAll('button')].find((b) =>
-  b.textContent?.includes('Assign current amount'),
-)
-check('reconcile action offered', Boolean(reconcile))
-reconcile?.click()
-await sleep(300)
-check('assigning current amount clears drift', text().includes('Within'))
+check('token drift flagged', baseCard.textContent?.includes('short by 300'))
+check('token drift alert logged', text().includes('USDC under the assigned amount'))
+check('card turns red on token drift', baseCard.className.includes('is-below'), baseCard.className)
 
-/* remove */
+/* reconcile token */
+clickButton(baseCard, 'reconcile')
+await sleep(400)
+check('token reconcile clears drift', baseCard.textContent?.includes('in line'))
+
+/* remove token */
+const tokenRow = baseCard.querySelector('.token-row')
+tokenRow?.querySelectorAll('button')[1]?.click()
+await sleep(250)
+check('token removed', !baseCard.textContent?.includes('USDC'))
+
+/* network filter appears once multiple networks are watched */
+const networkSelect = window.document.querySelector('.network-filter select')
+check('network filter shown', Boolean(networkSelect))
+if (networkSelect) {
+  setValue(networkSelect, 'base')
+  await sleep(250)
+  check('network filter narrows list', cards().length === 1 && Boolean(cardFor('Base treasury')))
+  setValue(networkSelect, 'all')
+  await sleep(200)
+}
+
+/* native drift + reconcile + remove */
+nativeWei = 400_000_000_000_000_000n
+clickButton(window.document, 'Check now')
+await sleep(600)
+check('native drift flagged', cardFor('Base treasury')?.textContent?.includes('Below assigned'))
+check('shortfall shown', cardFor('Base treasury')?.textContent?.includes('Short by'))
+
+clickButton(cardFor('Base treasury'), 'Assign current amount')
+await sleep(400)
+check('native reconcile clears drift', cardFor('Base treasury')?.textContent?.includes('Within'))
+
 window.confirm = () => true
-const remove = [...window.document.querySelectorAll('button')].find((b) =>
-  b.textContent?.includes('Remove'),
-)
-remove?.click()
-await sleep(200)
-check('wallet removed', text().includes('Add your first watch-only wallet'))
+clickButton(cardFor('Base treasury'), 'Remove')
+await sleep(300)
+check('wallet removed', !cardFor('Base treasury'))
 
 console.log('')
 if (failures.length > 0) {
   console.error(`${failures.length} check(s) failed:`)
-  failures.forEach((f) => console.error(` - ${f}`))
+  failures.forEach((failure) => console.error(` - ${failure}`))
   process.exit(1)
 }
 console.log('All smoke checks passed.\n')

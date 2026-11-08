@@ -16,6 +16,8 @@ export type IconName =
   | 'download'
   | 'upload'
   | 'clock'
+  | 'globe'
+  | 'token'
 
 const paths: Record<IconName, ReactNode> = {
   refresh: (
@@ -109,6 +111,19 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7v5l3 2" />
+    </>
+  ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3c2.5 2.6 2.5 15.4 0 18-2.5-2.6-2.5-15.4 0-18Z" />
+    </>
+  ),
+  token: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5 15.5 12 12 16.5 8.5 12z" />
     </>
   ),
 }

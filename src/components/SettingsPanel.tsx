@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { normalizeAmount } from '../lib/eth'
-import { DEFAULT_SETTINGS } from '../lib/storage'
-import type { Settings } from '../lib/types'
+import { NETWORK_LIST } from '../lib/networks'
+import type { NetworkId, Settings } from '../lib/types'
 import { Icon } from './Icon'
 
 interface Props {
@@ -35,14 +35,16 @@ export function SettingsPanel({
   const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(
     typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
   )
-  const [toleranceDraft, setToleranceDraft] = useState(settings.toleranceEth)
+  const [nativeDraft, setNativeDraft] = useState(settings.toleranceNative)
+  const [tokenDraft, setTokenDraft] = useState(settings.toleranceToken)
   const [toleranceError, setToleranceError] = useState<string | null>(null)
   const [importMessage, setImportMessage] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    setToleranceDraft(settings.toleranceEth)
-  }, [settings.toleranceEth])
+    setNativeDraft(settings.toleranceNative)
+    setTokenDraft(settings.toleranceToken)
+  }, [settings.toleranceNative, settings.toleranceToken])
 
   useEffect(() => {
     if (!open) return
@@ -55,14 +57,19 @@ export function SettingsPanel({
 
   if (!open) return null
 
-  function commitTolerance() {
-    const parsed = normalizeAmount(toleranceDraft)
-    if (!parsed.ok) {
-      setToleranceError(parsed.error)
+  function commitTolerances() {
+    const native = normalizeAmount(nativeDraft)
+    if (!native.ok) {
+      setToleranceError(`Native tolerance: ${native.error}`)
+      return
+    }
+    const token = normalizeAmount(tokenDraft)
+    if (!token.ok) {
+      setToleranceError(`Token tolerance: ${token.error}`)
       return
     }
     setToleranceError(null)
-    onChange({ toleranceEth: parsed.amount })
+    onChange({ toleranceNative: native.amount, toleranceToken: token.amount })
   }
 
   async function toggleNotifications(next: boolean) {
@@ -72,11 +79,13 @@ export function SettingsPanel({
     }
     if (typeof Notification === 'undefined') return
     const result =
-      Notification.permission === 'granted'
-        ? 'granted'
-        : await Notification.requestPermission()
+      Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
     setPermission(result)
     onChange({ notifications: result === 'granted' })
+  }
+
+  function setRpc(network: NetworkId, value: string) {
+    onChange({ customRpcs: { ...settings.customRpcs, [network]: value } })
   }
 
   async function handleFile(file: File | undefined) {
@@ -110,24 +119,42 @@ export function SettingsPanel({
           <section className="settings-group">
             <h3>Matching tolerance</h3>
             <p className="settings-hint">
-              How far a balance may drift from its assigned amount before it is flagged. Use a
-              small positive number to ignore rounding and gas dust.
+              How far a balance may drift from its assigned amount before it counts as off. Keep it
+              small but non-zero to absorb gas dust and rounding.
             </p>
-            <div className="input-wrap">
-              <input
-                className="input mono"
-                value={toleranceDraft}
-                onChange={(e) => {
-                  setToleranceDraft(e.target.value)
-                  setToleranceError(null)
-                }}
-                onBlur={commitTolerance}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitTolerance()
-                }}
-                inputMode="decimal"
-              />
-              <span className="input-suffix">± ETH</span>
+            <div className="field-row">
+              <label className="field">
+                <span className="field-label">Native asset</span>
+                <div className="input-wrap">
+                  <input
+                    className="input mono"
+                    value={nativeDraft}
+                    onChange={(e) => {
+                      setNativeDraft(e.target.value)
+                      setToleranceError(null)
+                    }}
+                    onBlur={commitTolerances}
+                    inputMode="decimal"
+                  />
+                  <span className="input-suffix">±</span>
+                </div>
+              </label>
+              <label className="field">
+                <span className="field-label">ERC-20 units</span>
+                <div className="input-wrap">
+                  <input
+                    className="input mono"
+                    value={tokenDraft}
+                    onChange={(e) => {
+                      setTokenDraft(e.target.value)
+                      setToleranceError(null)
+                    }}
+                    onBlur={commitTolerances}
+                    inputMode="decimal"
+                  />
+                  <span className="input-suffix">±</span>
+                </div>
+              </label>
             </div>
             {toleranceError && (
               <p className="field-error" role="alert">
@@ -138,7 +165,9 @@ export function SettingsPanel({
 
           <section className="settings-group">
             <h3>Auto-refresh</h3>
-            <p className="settings-hint">Balances are read straight from Ethereum mainnet.</p>
+            <p className="settings-hint">
+              Balances are read straight from each network by your browser.
+            </p>
             <select
               className="input"
               value={settings.autoRefreshSeconds}
@@ -178,27 +207,36 @@ export function SettingsPanel({
           </section>
 
           <section className="settings-group">
-            <h3>RPC endpoint</h3>
+            <h3>RPC endpoints</h3>
             <p className="settings-hint">
-              Leave empty to use the built-in public endpoint pool. Point this at your own node
-              (e.g. <span className="mono">http://localhost:8545</span>) for full privacy.
+              Leave a field empty to use the built-in public pool for that network. Point it at your
+              own node for full privacy.
             </p>
-            <input
-              className="input mono"
-              value={settings.rpcUrl}
-              placeholder="https://…"
-              spellCheck={false}
-              onChange={(e) => onChange({ rpcUrl: e.target.value })}
-            />
-            {settings.rpcUrl && (
-              <button
-                type="button"
-                className="link-btn"
-                onClick={() => onChange({ rpcUrl: DEFAULT_SETTINGS.rpcUrl })}
-              >
-                Reset to default endpoints
-              </button>
-            )}
+            <div className="rpc-list">
+              {NETWORK_LIST.map((network) => (
+                <label className="rpc-row" key={network.id}>
+                  <span className="rpc-name">
+                    <i style={{ background: network.accent }} aria-hidden="true" />
+                    {network.name}
+                  </span>
+                  <input
+                    className="input input-compact mono"
+                    value={settings.customRpcs[network.id] ?? ''}
+                    placeholder={`default · ${network.nativeSymbol}`}
+                    spellCheck={false}
+                    onChange={(e) => setRpc(network.id, e.target.value)}
+                  />
+                </label>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => onChange({ customRpcs: {} })}
+              disabled={Object.values(settings.customRpcs).every((value) => !value)}
+            >
+              Reset all to default endpoints
+            </button>
           </section>
 
           <section className="settings-group">
@@ -241,7 +279,7 @@ export function SettingsPanel({
             </button>
           </section>
 
-          <section className="settings-group settings-note">
+          <section className="settings-group settings-security">
             <Icon name="shield" size={14} /> This app never asks for, stores or transmits a private
             key or seed phrase. Addresses are read-only, so nothing here can move funds.
           </section>

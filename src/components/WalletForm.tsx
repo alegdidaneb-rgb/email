@@ -1,19 +1,23 @@
 import { useState, type FormEvent } from 'react'
 import { normalizeAddress, normalizeAmount } from '../lib/eth'
+import { networkOf, NETWORK_LIST } from '../lib/networks'
+import type { NetworkId, NewWalletInput } from '../lib/types'
 import { Icon } from './Icon'
-import type { NewWalletInput } from '../lib/types'
 
 interface Props {
-  knownAddresses: string[]
+  known: { address: string; network: NetworkId }[]
   onAdd: (input: NewWalletInput) => void
 }
 
-export function WalletForm({ knownAddresses, onAdd }: Props) {
+export function WalletForm({ known, onAdd }: Props) {
+  const [network, setNetwork] = useState<NetworkId>('ethereum')
   const [address, setAddress] = useState('')
   const [label, setLabel] = useState('')
   const [amount, setAmount] = useState('')
   const [note, setNote] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  const config = networkOf(network)
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -22,8 +26,13 @@ export function WalletForm({ knownAddresses, onAdd }: Props) {
       setError(parsedAddress.error)
       return
     }
-    if (knownAddresses.some((a) => a.toLowerCase() === parsedAddress.address.toLowerCase())) {
-      setError('That address is already on your watchlist.')
+    const duplicate = known.some(
+      (item) =>
+        item.network === network &&
+        item.address.toLowerCase() === parsedAddress.address.toLowerCase(),
+    )
+    if (duplicate) {
+      setError(`That address is already watched on ${config.name}.`)
       return
     }
     const parsedAmount = normalizeAmount(amount)
@@ -33,8 +42,9 @@ export function WalletForm({ knownAddresses, onAdd }: Props) {
     }
     onAdd({
       address: parsedAddress.address,
+      network,
       label: label.trim() || 'Untitled wallet',
-      expectedEth: parsedAmount.amount,
+      expectedNative: parsedAmount.amount,
       note: note.trim(),
     })
     setAddress('')
@@ -57,7 +67,25 @@ export function WalletForm({ knownAddresses, onAdd }: Props) {
       </p>
 
       <label className="field">
-        <span className="field-label">Ethereum address</span>
+        <span className="field-label">Network</span>
+        <select
+          className="input"
+          value={network}
+          onChange={(e) => {
+            setNetwork(e.target.value as NetworkId)
+            setError(null)
+          }}
+        >
+          {NETWORK_LIST.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name} · {item.nativeSymbol}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="field">
+        <span className="field-label">Address</span>
         <input
           className="input mono"
           value={address}
@@ -68,7 +96,6 @@ export function WalletForm({ knownAddresses, onAdd }: Props) {
           placeholder="0x…"
           spellCheck={false}
           autoComplete="off"
-          inputMode="text"
         />
       </label>
 
@@ -85,7 +112,7 @@ export function WalletForm({ knownAddresses, onAdd }: Props) {
 
       <label className="field">
         <span className="field-label">
-          Amount assigned <span className="field-hint">ETH this wallet should hold</span>
+          Amount assigned <span className="field-hint">{config.nativeSymbol} this wallet should hold</span>
         </span>
         <div className="input-wrap">
           <input
@@ -99,7 +126,7 @@ export function WalletForm({ knownAddresses, onAdd }: Props) {
             inputMode="decimal"
             autoComplete="off"
           />
-          <span className="input-suffix">ETH</span>
+          <span className="input-suffix">{config.nativeSymbol}</span>
         </div>
       </label>
 
@@ -111,7 +138,7 @@ export function WalletForm({ knownAddresses, onAdd }: Props) {
           className="input"
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="Seed phrase in the safe deposit box"
+          placeholder="Cold storage, safe deposit box"
           maxLength={120}
         />
       </label>
@@ -125,6 +152,9 @@ export function WalletForm({ knownAddresses, onAdd }: Props) {
       <button type="submit" className="btn btn-primary btn-block">
         <Icon name="plus" size={15} /> Add to watchlist
       </button>
+      <p className="form-tip">
+        <Icon name="token" size={12} /> ERC-20 tokens are added per wallet, from the wallet card.
+      </p>
     </form>
   )
 }

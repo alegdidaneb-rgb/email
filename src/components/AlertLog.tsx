@@ -1,4 +1,5 @@
 import { formatClock, shortenAddress } from '../lib/format'
+import { networkOf } from '../lib/networks'
 import type { AlertEntry } from '../lib/types'
 import { Icon, type IconName } from './Icon'
 
@@ -7,12 +8,12 @@ interface Props {
   onClear: () => void
 }
 
-const kindMeta: Record<AlertEntry['kind'], { icon: IconName; className: string; title: string }> = {
-  'moved-down': { icon: 'alert', className: 'is-below', title: 'Funds moved out' },
-  'moved-up': { icon: 'download', className: 'is-above', title: 'Funds moved in' },
-  'back-in-line': { icon: 'check', className: 'is-match', title: 'Back in line' },
-  mismatch: { icon: 'target', className: 'is-unknown', title: 'Does not match' },
-  error: { icon: 'alert', className: 'is-below', title: 'Read error' },
+const kindMeta: Record<AlertEntry['kind'], { icon: IconName; className: string }> = {
+  'moved-down': { icon: 'alert', className: 'is-below' },
+  'moved-up': { icon: 'download', className: 'is-above' },
+  'back-in-line': { icon: 'check', className: 'is-match' },
+  mismatch: { icon: 'target', className: 'is-unknown' },
+  error: { icon: 'alert', className: 'is-below' },
 }
 
 export function AlertLog({ alerts, onClear }: Props) {
@@ -45,7 +46,9 @@ export function AlertLog({ alerts, onClear }: Props) {
                 <div className="alert-body">
                   <p className="alert-message">{alert.message}</p>
                   <p className="alert-meta">
-                    {alert.label || shortenAddress(alert.address)} · {formatClock(alert.at)}
+                    {alert.label || shortenAddress(alert.address)} ·{' '}
+                    {networkOf(alert.network).short}
+                    {alert.asset ? ` · ${alert.asset}` : ''} · {formatClock(alert.at)}
                   </p>
                 </div>
               </li>
