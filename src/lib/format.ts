@@ -1,4 +1,5 @@
-export function formatEth(value: string | number | null, maxDecimals = 6): string {
+/** Formats an asset amount with grouping and up to `maxDecimals` fraction digits. */
+export function formatAmount(value: string | number | null, maxDecimals = 6): string {
   if (value === null) return '—'
   const n = typeof value === 'string' ? Number(value) : value
   if (!Number.isFinite(n)) return '—'
@@ -10,12 +11,19 @@ export function formatEth(value: string | number | null, maxDecimals = 6): strin
   })
 }
 
-export function formatEthCompact(value: number | null): string {
+/** Compact gap / drift figure for tight spaces. */
+export function formatCompact(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return '—'
   const abs = Math.abs(value)
   if (abs === 0) return '0'
+  if (abs < 0.000001) return '<0.000001'
   if (abs < 0.0001) return '<0.0001'
-  return formatEth(value, abs < 1 ? 6 : 4)
+  return formatAmount(value, abs < 1 ? 6 : 4)
+}
+
+export function formatTokenAmount(value: string | null, decimals: number): string {
+  if (value === null) return '—'
+  return formatAmount(value, Math.min(Math.max(decimals, 0), 6))
 }
 
 export function shortenAddress(address: string, lead = 6, tail = 4): string {

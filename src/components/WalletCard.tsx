@@ -1,52 +1,90 @@
-import { useState } from 'react'
-import { normalizeAmount } from '../lib/eth'
-import { formatEth, formatEthCompact, relativeTime, shortenAddress } from '../lib/format'
-import type { Wallet } from '../lib/types'
+import { useState, type FormEvent } from 'react'
+import { assetGap, combineStatus, normalizeAmount } from '../lib/eth'
+import {
+  formatAmount,
+  formatCompact,
+  formatTokenAmount,
+  relativeTime,
+  shortenAddress,
+} from '../lib/format'
+import { networkOf } from '../lib/networks'
+import type { AssetStatus, TokenHolding, Wallet } from '../lib/types'
 import { CopyButton } from './CopyButton'
 import { Icon } from './Icon'
 import { Sparkline } from './Sparkline'
 
 interface Props {
   wallet: Wallet
-  toleranceEth: number
+  toleranceNative: number
   checking: boolean
+  readFailed: boolean
   onRefresh: () => void
   onUpdate: (patch: Partial<Wallet>) => void
   onRemove: () => void
-  onReconcile: () => void
+  onShare: () => void
+  onReconcileNative: () => void
+  onAddToken: (tokenAddress: string, expectedAmount: string) => Promise<string | null>
+  onUpdateToken: (tokenId: string, patch: Partial<TokenHolding>) => void
+  onRemoveToken: (tokenId: string) => void
+  onReconcileToken: (token: TokenHolding) => void
 }
 
-const statusCopy = {
+const statusCopy: Record<AssetStatus, { label: string; className: string }> = {
   match: { label: 'Matches', className: 'is-match' },
   below: { label: 'Below assigned', className: 'is-below' },
   above: { label: 'Above assigned', className: 'is-above' },
   unknown: { label: 'Not checked', className: 'is-unknown' },
-} as const
+}
 
 export function WalletCard({
   wallet,
-  toleranceEth,
+  toleranceNative,
   checking,
+  readFailed,
   onRefresh,
   onUpdate,
   onRemove,
-  onReconcile,
+  onShare,
+  onReconcileNative,
+  onAddToken,
+  onUpdateToken,
+  onRemoveToken,
+  onReconcileToken,
 }: Props) {
+  const config = networkOf(wallet.network)
   const [editing, setEditing] = useState(false)
   const [draftLabel, setDraftLabel] = useState(wallet.label)
-  const [draftAmount, setDraftAmount] = useState(wallet.expectedEth)
+  const [draftAmount, setDraftAmount] = useState(wallet.expectedNative)
   const [draftNote, setDraftNote] = useState(wallet.note)
   const [error, setError] = useState<string | null>(null)
 
-  const meta = statusCopy[wallet.status]
-  const actual = wallet.lastEth === null ? null : Number(wallet.lastEth)
-  const expected = Number(wallet.expectedEth)
+  const [tokenFormOpen, setTokenFormOpen] = useState(false)
+  const [tokenAddress, setTokenAddress] = useState('')
+  const [tokenAmount, setTokenAmount] = useState('')
+  const [tokenBusy, setTokenBusy] = useState(false)
+  const [tokenError, setTokenError] = useState<string | null>(null)
+  const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
+  const [tokenDraftAmount, setTokenDraftAmount] = useState('')
+
+  const overall = combineStatus([wallet.status, ...wallet.tokens.map((token) => token.status)])
+  const actualNative = wallet.lastNative === null ? null : Number(wallet.lastNative)
+  // An assigned amount on an address that holds nothing is worth naming plainly:
+  // "not funded yet" says what "below assigned" only implies.
+  const unfunded =
+    actualNative === 0 && Number(wallet.expectedNative) > 0 && overall === 'below'
+  const meta = unfunded
+    ? { label: 'Not funded yet', className: statusCopy.below.className }
+    : statusCopy[overall]
+
+  const actual = actualNative
+  const isEmpty = actualNative !== null && actualNative === 0
+  const expected = Number(wallet.expectedNative)
   const diff = actual === null ? null : actual - expected
-  const offBy = diff !== null && Math.abs(diff) > Math.max(toleranceEth, 0) ? diff : null
+  const offBy = diff !== null && Math.abs(diff) > Math.max(toleranceNative, 0) ? diff : null
 
   function startEdit() {
     setDraftLabel(wallet.label)
-    setDraftAmount(wallet.expectedEth)
+    setDraftAmount(wallet.expectedNative)
     setDraftNote(wallet.note)
     setError(null)
     setEditing(true)
@@ -60,29 +98,72 @@ export function WalletCard({
     }
     onUpdate({
       label: draftLabel.trim() || 'Untitled wallet',
-      expectedEth: parsed.amount,
+      expectedNative: parsed.amount,
       note: draftNote.trim(),
     })
     setEditing(false)
+  }
+
+  async function submitToken(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setTokenBusy(true)
+    setTokenError(null)
+    const message = await onAddToken(tokenAddress, tokenAmount)
+    setTokenBusy(false)
+    if (message) {
+      setTokenError(message)
+      return
+    }
+    setTokenFormOpen(false)
+    setTokenAddress('')
+    setTokenAmount('')
+  }
+
+  function startTokenEdit(token: TokenHolding) {
+    setEditingTokenId(token.id)
+    setTokenDraftAmount(token.expectedAmount)
+  }
+
+  function saveTokenEdit(token: TokenHolding) {
+    const parsed = normalizeAmount(tokenDraftAmount)
+    if (!parsed.ok) return
+    onUpdateToken(token.id, { expectedAmount: parsed.amount })
+    setEditingTokenId(null)
   }
 
   return (
     <article className={`wallet-card ${meta.className}`}>
       <header className="wallet-head">
         <div className="wallet-id">
-          <h3>{wallet.label}</h3>
+          <div className="wallet-title-row">
+            <span className="net-badge">
+              <i style={{ background: config.accent }} aria-hidden="true" />
+              {config.name}
+            </span>
+            {config.testnet && <span className="testnet-chip">testnet</span>}
+            <h3>{wallet.label}</h3>
+          </div>
           <div className="wallet-address">
             <span className="mono" title={wallet.address}>
               {shortenAddress(wallet.address, 10, 8)}
             </span>
             <CopyButton address={wallet.address} />
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={onShare}
+              title="Share this wallet — QR for Trust Wallet, link for another device"
+              aria-label="Share this wallet"
+            >
+              <Icon name="share" size={14} />
+            </button>
             <a
               className="icon-btn"
-              href={`https://etherscan.io/address/${wallet.address}`}
+              href={`${config.explorer}/address/${wallet.address}`}
               target="_blank"
               rel="noreferrer noopener"
-              title="Open in Etherscan"
-              aria-label="Open in Etherscan"
+              title={`Open in ${config.explorerName}`}
+              aria-label={`Open in ${config.explorerName}`}
             >
               <Icon name="external" size={14} />
             </a>
@@ -97,8 +178,8 @@ export function WalletCard({
             className="icon-btn"
             onClick={onRefresh}
             disabled={checking}
-            title="Check this address now"
-            aria-label="Check this address now"
+            title="Check this wallet now"
+            aria-label="Check this wallet now"
           >
             <Icon name="refresh" size={14} className={checking ? 'spin' : undefined} />
           </button>
@@ -118,7 +199,7 @@ export function WalletCard({
           </label>
           <label className="field">
             <span className="field-label">
-              Amount assigned <span className="field-hint">ETH</span>
+              Amount assigned <span className="field-hint">{config.nativeSymbol}</span>
             </span>
             <input
               className="input mono"
@@ -158,47 +239,204 @@ export function WalletCard({
       ) : (
         <>
           <div className="wallet-metrics">
-            <div className="metric">
-              <span className="metric-label">On-chain now</span>
+            <div className="metric metric-primary">
+              <span className="metric-label">Assigned amount</span>
               <span className="metric-value mono">
-                {formatEth(wallet.lastEth, 6)}
-                <em>ETH</em>
+                {formatAmount(wallet.expectedNative, 6)}
+                <em>{config.nativeSymbol}</em>
               </span>
             </div>
-            <div className="metric metric-right">
-              <span className="metric-label">Assigned</span>
+            <div className="metric metric-right metric-secondary">
+              <span className="metric-label">On-chain now</span>
               <span className="metric-value mono">
-                {formatEth(wallet.expectedEth, 6)}
-                <em>ETH</em>
+                {formatAmount(wallet.lastNative, 6)}
+                <em>{config.nativeSymbol}</em>
               </span>
             </div>
           </div>
 
           <div className="wallet-delta">
-            {wallet.lastEth === null ? (
+            {wallet.lastNative === null ? (
               <span className="delta delta-unknown">
                 <Icon name="clock" size={13} /> Waiting for the first reading
               </span>
             ) : offBy === null ? (
               <span className="delta delta-match">
-                <Icon name="check" size={13} /> Within {formatEth(toleranceEth, 6)} ETH of the
-                assigned amount
+                <Icon name="check" size={13} /> Within {formatAmount(toleranceNative, 6)}{' '}
+                {config.nativeSymbol} of the assigned amount
               </span>
             ) : (
               <span className={`delta ${offBy < 0 ? 'delta-down' : 'delta-up'}`}>
                 <Icon name="alert" size={13} />
-                {offBy < 0 ? 'Short by' : 'Over by'} {formatEthCompact(Math.abs(offBy))} ETH
+                {offBy < 0 ? 'Short by' : 'Over by'} {formatCompact(Math.abs(offBy))}{' '}
+                {config.nativeSymbol}
                 {' · '}
-                {offBy < 0 ? 'funds left this wallet' : 'funds arrived'}
-                <button type="button" className="link-btn" onClick={onReconcile}>
+                {isEmpty
+                  ? 'nothing on-chain yet'
+                  : offBy < 0
+                    ? 'funds left this wallet'
+                    : 'funds arrived'}
+                <button type="button" className="link-btn" onClick={onReconcileNative}>
                   Assign current amount
                 </button>
               </span>
             )}
           </div>
 
+          {readFailed && (
+            <p className="read-failed">
+              <Icon name="alert" size={13} /> Couldn't reach an RPC endpoint for{' '}
+              {config.name} just now — the last known balance is shown above. It retries
+              automatically.
+            </p>
+          )}
+
           {wallet.history.length > 1 && (
             <Sparkline history={wallet.history} expected={expected} />
+          )}
+
+          {wallet.tokens.length > 0 && (
+            <div className="token-section">
+              <span className="token-section-label">
+                <Icon name="token" size={12} /> ERC-20 holdings
+              </span>
+              <ul className="token-list">
+                {wallet.tokens.map((token) => {
+                  const gap = assetGap(token.lastAmount, token.expectedAmount)
+                  const tokenMeta = statusCopy[token.status]
+                  return (
+                    <li key={token.id} className={`token-row ${tokenMeta.className}`}>
+                      <span className="token-dot" aria-hidden="true" />
+                      <div className="token-main">
+                        <span className="token-balance mono">
+                          {formatAmount(token.expectedAmount, 6)}
+                          <em>{token.symbol}</em>
+                        </span>
+                        {editingTokenId === token.id ? (
+                          <span className="token-edit">
+                            <input
+                              className="input input-compact mono"
+                              value={tokenDraftAmount}
+                              inputMode="decimal"
+                              onChange={(e) => setTokenDraftAmount(e.target.value)}
+                              aria-label="Assigned token amount"
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-xs"
+                              onClick={() => saveTokenEdit(token)}
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs"
+                              onClick={() => setEditingTokenId(null)}
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="token-sub">
+                            assigned · on-chain{' '}
+                            {formatTokenAmount(token.lastAmount, token.decimals)}
+                            {gap === null
+                              ? ' · not checked'
+                              : token.status === 'match'
+                                ? ' · in line'
+                                : ` · ${gap < 0 ? 'short by' : 'over by'} ${formatCompact(Math.abs(gap))}`}
+                          </span>
+                        )}
+                      </div>
+                      <div className="token-actions">
+                        {(token.status === 'below' || token.status === 'above') && (
+                          <button
+                            type="button"
+                            className="link-btn"
+                            onClick={() => onReconcileToken(token)}
+                          >
+                            reconcile
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          onClick={() => startTokenEdit(token)}
+                          title="Edit assigned amount"
+                          aria-label={`Edit assigned amount for ${token.symbol}`}
+                        >
+                          <Icon name="settings" size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          onClick={() => onRemoveToken(token.id)}
+                          title="Stop tracking this token"
+                          aria-label={`Stop tracking ${token.symbol}`}
+                        >
+                          <Icon name="x" size={12} />
+                        </button>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+
+          {tokenFormOpen ? (
+            <form className="token-form" onSubmit={submitToken}>
+              <input
+                className="input input-compact mono"
+                value={tokenAddress}
+                onChange={(e) => {
+                  setTokenAddress(e.target.value)
+                  setTokenError(null)
+                }}
+                placeholder="Token contract 0x…"
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <input
+                className="input input-compact mono"
+                value={tokenAmount}
+                onChange={(e) => {
+                  setTokenAmount(e.target.value)
+                  setTokenError(null)
+                }}
+                placeholder="Assigned amount"
+                inputMode="decimal"
+                autoComplete="off"
+              />
+              <button type="submit" className="btn btn-primary btn-xs" disabled={tokenBusy}>
+                {tokenBusy ? 'Reading…' : 'Add token'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                onClick={() => {
+                  setTokenFormOpen(false)
+                  setTokenError(null)
+                }}
+              >
+                Cancel
+              </button>
+              {tokenError && (
+                <p className="field-error token-form-error" role="alert">
+                  <Icon name="alert" size={13} /> {tokenError}
+                </p>
+              )}
+            </form>
+          ) : (
+            !editing && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs add-token"
+                onClick={() => setTokenFormOpen(true)}
+              >
+                <Icon name="plus" size={13} /> Track ERC-20 token
+              </button>
+            )
           )}
 
           {wallet.note && <p className="wallet-note">{wallet.note}</p>}

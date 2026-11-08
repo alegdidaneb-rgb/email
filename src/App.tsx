@@ -2,22 +2,62 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertLog } from './components/AlertLog'
 import { Icon } from './components/Icon'
 import { SettingsPanel } from './components/SettingsPanel'
+import { SharePanel } from './components/SharePanel'
 import { WalletCard } from './components/WalletCard'
 import { WalletForm } from './components/WalletForm'
-import { evaluateStatus, fetchEthBalance, makeClient } from './lib/eth'
-import { formatEth, formatEthCompact, relativeTime, uid } from './lib/format'
+import {
+  assetGap,
+  combineStatus,
+  evaluateStatus,
+  fetchNativeBalance,
+  fetchTokenBalance,
+  fetchTokenMeta,
+  makeClient,
+  normalizeAddress,
+  normalizeAmount,
+} from './lib/eth'
+import { formatAmount, formatCompact, relativeTime, shortenAddress, uid } from './lib/format'
+import { networkOf, NETWORK_LIST } from './lib/networks'
+import { getRpcReports, rpcLabel, type RpcReport } from './lib/transport'
+import { mergeShared, readShare, type ShareBundle } from './lib/share'
 import { capAlerts, capHistory, emptyDb, loadDb, parseDb, saveDb } from './lib/storage'
-import type { AlertEntry, DB, NewWalletInput, Settings, Wallet } from './lib/types'
+import type {
+  AlertEntry,
+  AssetStatus,
+  DB,
+  NetworkId,
+  NewWalletInput,
+  Settings,
+  TokenHolding,
+  Wallet,
+} from './lib/types'
 
 type Filter = 'all' | 'off'
+type NetworkFilter = 'all' | NetworkId
+
+interface Job {
+  walletId: string
+  tokenId: string | null
+  promise: Promise<string>
+}
+
+const jobKey = (walletId: string, tokenId: string | null) => `${walletId}:${tokenId ?? 'native'}`
 
 export default function App() {
   const [db, setDb] = useState<DB>(() => loadDb())
   const dbRef = useRef(db)
   const [checkingIds, setCheckingIds] = useState<string[]>([])
+  const [readFailedIds, setReadFailedIds] = useState<string[]>([])
   const [rpcError, setRpcError] = useState<string | null>(null)
+  const [rpcReports, setRpcReports] = useState<RpcReport[]>([])
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [reportCopied, setReportCopied] = useState(false)
+  const [shareOpen, setShareOpen] = useState<Wallet[] | null>(null)
+  const [incoming, setIncoming] = useState<ShareBundle | null>(null)
+  const handledShare = useRef<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [filter, setFilter] = useState<Filter>('all')
+  const [networkFilter, setNetworkFilter] = useState<NetworkFilter>('all')
   const [, setTick] = useState(0)
 
   const commit = useCallback((updater: (prev: DB) => DB) => {
@@ -30,7 +70,7 @@ export default function App() {
     saveDb(db)
   }, [db])
 
-  // Keeps "checked 2m ago" style labels honest without re-reading the chain.
+  // Keeps "checked 2m ago" labels honest without hitting the chain.
   useEffect(() => {
     const id = window.setInterval(() => setTick((t) => t + 1), 15_000)
     return () => window.clearInterval(id)
@@ -43,17 +83,48 @@ export default function App() {
       if (alert.kind !== 'moved-down' && alert.kind !== 'moved-up') continue
       try {
         new Notification(`WatchVault · ${alert.label}`, {
-          body: alert.message,
+          body: `${networkOf(alert.network).short} · ${alert.message}`,
           tag: `${alert.walletId}-${alert.at}`,
         })
       } catch {
-        /* notifications are best-effort */
+        /* best effort */
       }
     }
   }, [])
 
+  const copyReport = useCallback(async () => {
+    const lines = [
+      `WatchVault RPC report — ${new Date().toLocaleString()}`,
+      `page: ${window.location.href}`,
+      `browser: ${navigator.userAgent}`,
+      `problem: ${rpcError ?? 'balance read failed'}`,
+    ]
+    for (const report of rpcReports) {
+      lines.push(
+        '',
+        `${networkOf(report.network).name}: ${
+          report.via ? `answered by ${rpcLabel(report.via)}` : 'no endpoint answered'
+        }`,
+      )
+      for (const attempt of report.attempts) {
+        lines.push(
+          `  ${attempt.ok ? 'ok  ' : 'fail'} ${rpcLabel(attempt.url)} · ${attempt.ms}ms${
+            attempt.error ? ` · ${attempt.error}` : ''
+          }`,
+        )
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'))
+      setReportCopied(true)
+      window.setTimeout(() => setReportCopied(false), 1800)
+    } catch {
+      /* clipboard blocked — the Details panel still shows everything */
+    }
+  }, [rpcError, rpcReports])
+
   const refresh = useCallback(
-    async (ids?: string[]) => {
+    async (ids?: string[], pass = 1) => {
       const snapshot = dbRef.current
       const targets = ids
         ? snapshot.wallets.filter((wallet) => ids.includes(wallet.id))
@@ -63,85 +134,132 @@ export default function App() {
       setCheckingIds(targets.map((target) => target.id))
       setRpcError(null)
 
-      const client = makeClient(snapshot.settings.rpcUrl)
-      const results = await Promise.allSettled(
-        targets.map((target) => fetchEthBalance(client, target.address)),
-      )
+      const clients = new Map<NetworkId, ReturnType<typeof makeClient>>()
+      const clientFor = (network: NetworkId) => {
+        let client = clients.get(network)
+        if (!client) {
+          client = makeClient(network, snapshot.settings.customRpcs[network] ?? '')
+          clients.set(network, client)
+        }
+        return client
+      }
 
-      const balances = new Map<string, string>()
-      results.forEach((result, index) => {
-        if (result.status === 'fulfilled') balances.set(targets[index].id, result.value)
+      const jobs: Job[] = []
+      for (const wallet of targets) {
+        const client = clientFor(wallet.network)
+        jobs.push({
+          walletId: wallet.id,
+          tokenId: null,
+          promise: fetchNativeBalance(client, wallet.address),
+        })
+        for (const token of wallet.tokens) {
+          jobs.push({
+            walletId: wallet.id,
+            tokenId: token.id,
+            promise: fetchTokenBalance(client, token.tokenAddress, wallet.address, token.decimals),
+          })
+        }
+      }
+
+      const settled = await Promise.allSettled(jobs.map((job) => job.promise))
+      const values = new Map<string, string>()
+      settled.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          values.set(jobKey(jobs[index].walletId, jobs[index].tokenId), result.value)
+        }
       })
 
-      if (balances.size === 0) {
+      if (values.size === 0) {
+        // One quiet retry: most failures are a transient 429 or a stalled host.
+        if (pass < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 900))
+          await refresh(ids, pass + 1)
+          return
+        }
+        setRpcReports(getRpcReports())
+        setReadFailedIds(targets.map((target) => target.id))
         setRpcError(
-          'No Ethereum RPC endpoint answered. Check your connection, or set your own endpoint in Settings.',
+          'No RPC endpoint answered for these networks. Open “Details” to see every endpoint that was tried, or set your own under Settings.',
         )
         setCheckingIds([])
         return
       }
 
-      const failed = targets.length - balances.size
+      const failedWallets = targets
+        .filter((target) => {
+          const own = jobs.filter((job) => job.walletId === target.id)
+          return own.length > 0 && own.every((job) => !values.has(jobKey(job.walletId, job.tokenId)))
+        })
+        .map((target) => target.id)
+      setReadFailedIds(failedWallets)
+      setRpcReports(getRpcReports())
+
+      const failed = jobs.length - values.size
       if (failed > 0) {
         setRpcError(
-          `${failed} address${failed === 1 ? '' : 'es'} could not be read just now — retrying on the next check.`,
+          `${failed} balance${failed === 1 ? '' : 's'} could not be read just now — retrying on the next check.`,
         )
       }
 
       const now = Date.now()
-      const tolerance = Number(snapshot.settings.toleranceEth) || 0
+      const targetIds = new Set(targets.map((target) => target.id))
       const freshAlerts: AlertEntry[] = []
 
       commit((prev) => {
+        const tolNative = Number(prev.settings.toleranceNative) || 0
+        const tolToken = Number(prev.settings.toleranceToken) || 0
+
         const wallets = prev.wallets.map((wallet) => {
-          const actualEth = balances.get(wallet.id)
-          if (actualEth === undefined) return wallet
+          if (!targetIds.has(wallet.id)) return wallet
+          const symbol = networkOf(wallet.network).nativeSymbol
+          let next = wallet
 
-          const { status } = evaluateStatus(actualEth, wallet.expectedEth, tolerance)
-          const expected = Number(wallet.expectedEth)
-          const actual = Number(actualEth)
-          const gap = formatEthCompact(Math.abs(actual - expected))
-          const known = wallet.lastEth !== null && wallet.status !== 'unknown'
+          const nativeValue = values.get(jobKey(wallet.id, null))
+          if (nativeValue !== undefined) {
+            const status = evaluateStatus(nativeValue, wallet.expectedNative, tolNative)
+            const alert = transitionAlert(
+              wallet,
+              symbol,
+              wallet.status,
+              status,
+              wallet.expectedNative,
+              nativeValue,
+              now,
+            )
+            if (alert) freshAlerts.push(alert)
 
-          if (status !== wallet.status) {
-            if (known && status === 'below') {
-              freshAlerts.push(
-                makeAlert(wallet, 'moved-down', `${gap} ETH under the assigned amount — funds moved out`, actualEth, now),
-              )
-            } else if (known && status === 'above') {
-              freshAlerts.push(
-                makeAlert(wallet, 'moved-up', `${gap} ETH over the assigned amount — funds moved in`, actualEth, now),
-              )
-            } else if (known && status === 'match') {
-              freshAlerts.push(
-                makeAlert(wallet, 'back-in-line', 'Balance is back at the assigned amount', actualEth, now),
-              )
-            } else if (status === 'below' || status === 'above') {
-              freshAlerts.push(
-                makeAlert(
+            const last = wallet.history[wallet.history.length - 1]
+            const history =
+              last && last.amount === nativeValue
+                ? wallet.history
+                : capHistory([...wallet.history, { t: now, amount: nativeValue }])
+
+            next = { ...next, lastNative: nativeValue, lastCheckedAt: now, status, history }
+          }
+
+          if (wallet.tokens.length > 0) {
+            next = {
+              ...next,
+              tokens: wallet.tokens.map((token) => {
+                const value = values.get(jobKey(wallet.id, token.id))
+                if (value === undefined) return token
+                const status = evaluateStatus(value, token.expectedAmount, tolToken)
+                const alert = transitionAlert(
                   wallet,
-                  'mismatch',
-                  `First reading is ${gap} ETH ${status === 'below' ? 'under' : 'over'} the assigned amount`,
-                  actualEth,
+                  token.symbol,
+                  token.status,
+                  status,
+                  token.expectedAmount,
+                  value,
                   now,
-                ),
-              )
+                )
+                if (alert) freshAlerts.push(alert)
+                return { ...token, lastAmount: value, status, lastCheckedAt: now }
+              }),
             }
           }
 
-          const lastSnapshot = wallet.history[wallet.history.length - 1]
-          const history =
-            lastSnapshot && lastSnapshot.eth === actualEth
-              ? wallet.history
-              : capHistory([...wallet.history, { t: now, eth: actualEth }])
-
-          return {
-            ...wallet,
-            lastEth: actualEth,
-            lastCheckedAt: now,
-            status,
-            history,
-          }
+          return next
         })
 
         return { ...prev, wallets }
@@ -157,7 +275,6 @@ export default function App() {
     [commit, notify],
   )
 
-  // One check on load, then on the configured interval.
   const didInitialCheck = useRef(false)
   useEffect(() => {
     if (didInitialCheck.current) return
@@ -176,38 +293,102 @@ export default function App() {
     const wallet: Wallet = {
       id: uid(),
       address: input.address,
+      network: input.network,
       label: input.label,
-      expectedEth: input.expectedEth,
       note: input.note,
       createdAt: Date.now(),
-      lastEth: null,
+      expectedNative: input.expectedNative,
+      lastNative: null,
       lastCheckedAt: null,
       status: 'unknown',
       history: [],
+      tokens: [],
     }
     commit((prev) => ({ ...prev, wallets: [wallet, ...prev.wallets] }))
     void refresh([wallet.id])
   }
 
+  /* ---------- cross-device share ---------- */
+
+  const dismissIncoming = useCallback(() => {
+    setIncoming(null)
+    handledShare.current = null
+    if (typeof window.history?.replaceState === 'function') {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+    }
+  }, [])
+
+  const applyIncoming = useCallback(
+    (bundle: ShareBundle) => {
+      const { add } = mergeShared(dbRef.current.wallets, bundle.wallets)
+      if (add.length === 0) return
+      const now = Date.now()
+      const wallets: Wallet[] = add.map((shared) => ({
+        id: uid(),
+        address: shared.address,
+        network: shared.network,
+        label: shared.label,
+        note: 'Added from a share link',
+        createdAt: now,
+        expectedNative: shared.expectedNative,
+        lastNative: null,
+        lastCheckedAt: null,
+        status: 'unknown' as const,
+        history: [],
+        tokens: shared.tokens.map((token) => ({
+          id: uid(),
+          tokenAddress: token.address,
+          symbol: token.symbol,
+          decimals: token.decimals,
+          expectedAmount: token.expectedAmount,
+          lastAmount: null,
+          lastCheckedAt: null,
+          status: 'unknown' as const,
+        })),
+      }))
+      commit((prev) => ({ ...prev, wallets: [...wallets, ...prev.wallets] }))
+      void refresh(wallets.map((wallet) => wallet.id))
+    },
+    [commit, refresh],
+  )
+
+  // A share link (or the QR that encodes it) lands here: #i=wv1.…
+  useEffect(() => {
+    function look() {
+      const source = `${window.location.search}${window.location.hash}`
+      if (!source || source === '?') return
+      if (handledShare.current === source) return
+      const bundle = readShare(window.location.search) ?? readShare(window.location.hash)
+      if (!bundle) return
+      handledShare.current = source
+      setIncoming(bundle)
+    }
+    look()
+    window.addEventListener('hashchange', look)
+    return () => window.removeEventListener('hashchange', look)
+  }, [])
+
+  const sharePreview = useMemo(
+    () => (incoming ? mergeShared(db.wallets, incoming.wallets) : null),
+    [incoming, db.wallets],
+  )
+
   const updateWallet = (id: string, patch: Partial<Wallet>) => {
     commit((prev) => {
-      const tolerance = Number(prev.settings.toleranceEth) || 0
+      const tolerance = Number(prev.settings.toleranceNative) || 0
       return {
         ...prev,
         wallets: prev.wallets.map((wallet) => {
           if (wallet.id !== id) return wallet
           const next = { ...wallet, ...patch }
-          return {
-            ...next,
-            status: evaluateStatus(next.lastEth, next.expectedEth, tolerance).status,
-          }
+          return { ...next, status: evaluateStatus(next.lastNative, next.expectedNative, tolerance) }
         }),
       }
     })
   }
 
   const removeWallet = (wallet: Wallet) => {
-    if (!window.confirm(`Remove "${wallet.label}" from your watchlist?`)) return
+    if (!window.confirm(`Remove "${wallet.label}" and its token holdings from your watchlist?`)) return
     commit((prev) => ({
       ...prev,
       wallets: prev.wallets.filter((item) => item.id !== wallet.id),
@@ -215,19 +396,116 @@ export default function App() {
     }))
   }
 
-  const reconcile = (wallet: Wallet) => {
-    if (wallet.lastEth === null) return
-    updateWallet(wallet.id, { expectedEth: wallet.lastEth })
+  const reconcileNative = (wallet: Wallet) => {
+    const lastNative = wallet.lastNative
+    if (lastNative === null) return
+    updateWallet(wallet.id, { expectedNative: lastNative })
+    const symbol = networkOf(wallet.network).nativeSymbol
     commit((prev) => ({
       ...prev,
       alerts: capAlerts([
-        makeAlert(
-          wallet,
-          'back-in-line',
-          `Assigned amount updated to the current balance (${formatEth(wallet.lastEth, 6)} ETH)`,
-          wallet.lastEth,
-          Date.now(),
+        makeAlert(wallet, symbol, 'back-in-line', 'Assigned amount updated to the current balance', lastNative, lastNative, Date.now()),
+        ...prev.alerts,
+      ]),
+    }))
+  }
+
+  const addToken = async (
+    walletId: string,
+    tokenAddressInput: string,
+    expectedAmountInput: string,
+  ): Promise<string | null> => {
+    const wallet = dbRef.current.wallets.find((item) => item.id === walletId)
+    if (!wallet) return 'That wallet is no longer on your watchlist.'
+
+    const parsedAddress = normalizeAddress(tokenAddressInput)
+    if (!parsedAddress.ok) return parsedAddress.error
+    if (
+      wallet.tokens.some(
+        (token) => token.tokenAddress.toLowerCase() === parsedAddress.address.toLowerCase(),
+      )
+    ) {
+      return 'That token is already tracked on this wallet.'
+    }
+    const parsedAmount = normalizeAmount(expectedAmountInput)
+    if (!parsedAmount.ok) return parsedAmount.error
+
+    const client = makeClient(
+      wallet.network,
+      dbRef.current.settings.customRpcs[wallet.network] ?? '',
+    )
+
+    let meta
+    try {
+      meta = await fetchTokenMeta(client, parsedAddress.address)
+    } catch {
+      return `Could not read that contract on ${networkOf(wallet.network).name}. Check the address and network.`
+    }
+
+    const token: TokenHolding = {
+      id: uid(),
+      tokenAddress: parsedAddress.address,
+      symbol: meta.symbol || shortenAddress(parsedAddress.address, 4, 4),
+      decimals: meta.decimals,
+      expectedAmount: parsedAmount.amount,
+      lastAmount: null,
+      lastCheckedAt: null,
+      status: 'unknown',
+    }
+
+    commit((prev) => ({
+      ...prev,
+      wallets: prev.wallets.map((item) =>
+        item.id === walletId ? { ...item, tokens: [...item.tokens, token] } : item,
+      ),
+    }))
+    void refresh([walletId])
+    return null
+  }
+
+  const updateToken = (walletId: string, tokenId: string, patch: Partial<TokenHolding>) => {
+    commit((prev) => {
+      const tolerance = Number(prev.settings.toleranceToken) || 0
+      return {
+        ...prev,
+        wallets: prev.wallets.map((wallet) =>
+          wallet.id === walletId
+            ? {
+                ...wallet,
+                tokens: wallet.tokens.map((token) => {
+                  if (token.id !== tokenId) return token
+                  const next = { ...token, ...patch }
+                  return {
+                    ...next,
+                    status: evaluateStatus(next.lastAmount, next.expectedAmount, tolerance),
+                  }
+                }),
+              }
+            : wallet,
         ),
+      }
+    })
+  }
+
+  const removeToken = (walletId: string, tokenId: string) => {
+    commit((prev) => ({
+      ...prev,
+      wallets: prev.wallets.map((wallet) =>
+        wallet.id === walletId
+          ? { ...wallet, tokens: wallet.tokens.filter((token) => token.id !== tokenId) }
+          : wallet,
+      ),
+    }))
+  }
+
+  const reconcileToken = (wallet: Wallet, token: TokenHolding) => {
+    const lastAmount = token.lastAmount
+    if (lastAmount === null) return
+    updateToken(wallet.id, token.id, { expectedAmount: lastAmount })
+    commit((prev) => ({
+      ...prev,
+      alerts: capAlerts([
+        makeAlert(wallet, token.symbol, 'back-in-line', 'Assigned amount updated to the current balance', lastAmount, lastAmount, Date.now()),
         ...prev.alerts,
       ]),
     }))
@@ -236,13 +514,18 @@ export default function App() {
   const updateSettings = (patch: Partial<Settings>) => {
     commit((prev) => {
       const settings = { ...prev.settings, ...patch }
-      const tolerance = Number(settings.toleranceEth) || 0
+      const tolNative = Number(settings.toleranceNative) || 0
+      const tolToken = Number(settings.toleranceToken) || 0
       return {
         ...prev,
         settings,
         wallets: prev.wallets.map((wallet) => ({
           ...wallet,
-          status: evaluateStatus(wallet.lastEth, wallet.expectedEth, tolerance).status,
+          status: evaluateStatus(wallet.lastNative, wallet.expectedNative, tolNative),
+          tokens: wallet.tokens.map((token) => ({
+            ...token,
+            status: evaluateStatus(token.lastAmount, token.expectedAmount, tolToken),
+          })),
         })),
       }
     })
@@ -272,29 +555,56 @@ export default function App() {
     }
   }
 
-  const totals = useMemo(() => {
-    let expected = 0
-    let actual = 0
-    let counted = 0
-    let off = 0
+  const stats = useMemo(() => {
+    const networks = new Set<NetworkId>()
+    let assets = 0
+    let nativeCount = 0
+    let tokenCount = 0
+    let offAssets = 0
+    let offWallets = 0
+    let lastCheck: number | null = null
+
     for (const wallet of db.wallets) {
-      expected += Number(wallet.expectedEth) || 0
-      if (wallet.lastEth !== null) {
-        actual += Number(wallet.lastEth) || 0
-        counted += 1
+      networks.add(wallet.network)
+      assets += 1 + wallet.tokens.length
+      nativeCount += 1
+      tokenCount += wallet.tokens.length
+      if (wallet.status === 'below' || wallet.status === 'above') offAssets += 1
+      for (const token of wallet.tokens) {
+        if (token.status === 'below' || token.status === 'above') offAssets += 1
       }
-      if (wallet.status === 'below' || wallet.status === 'above') off += 1
+      const overall = combineStatus([wallet.status, ...wallet.tokens.map((token) => token.status)])
+      if (overall === 'below' || overall === 'above') offWallets += 1
+      if (wallet.lastCheckedAt && (!lastCheck || wallet.lastCheckedAt > lastCheck)) {
+        lastCheck = wallet.lastCheckedAt
+      }
     }
-    const complete = counted === db.wallets.length && db.wallets.length > 0
-    return { expected, actual, counted, off, drift: complete ? actual - expected : null }
+
+    return { networks, assets, nativeCount, tokenCount, offAssets, offWallets, lastCheck }
   }, [db.wallets])
 
   const visibleWallets = useMemo(
     () =>
-      filter === 'off'
-        ? db.wallets.filter((wallet) => wallet.status === 'below' || wallet.status === 'above')
-        : db.wallets,
-    [db.wallets, filter],
+      db.wallets.filter((wallet) => {
+        if (networkFilter !== 'all' && wallet.network !== networkFilter) return false
+        if (filter === 'off') {
+          const overall = combineStatus([
+            wallet.status,
+            ...wallet.tokens.map((token) => token.status),
+          ])
+          return overall === 'below' || overall === 'above'
+        }
+        return true
+      }),
+    [db.wallets, filter, networkFilter],
+  )
+
+  const availableNetworks = useMemo(
+    () =>
+      NETWORK_LIST.filter((network) =>
+        db.wallets.some((wallet) => wallet.network === network.id),
+      ),
+    [db.wallets],
   )
 
   const checking = checkingIds.length > 0
@@ -308,17 +618,22 @@ export default function App() {
           </span>
           <div className="brand-text">
             <h1>WatchVault</h1>
-            <p>Watch-only Ethereum wallets, each with an amount you assign</p>
+            <p>Watch-only wallets across Ethereum and L2s, each with an amount you assign</p>
           </div>
         </div>
 
         <div className="topbar-actions">
           <span className="network-pill">
-            <i aria-hidden="true" /> Ethereum mainnet
+            <i aria-hidden="true" />
+            {stats.networks.size === 0
+              ? 'Mainnet + L2s'
+              : stats.networks.size === 1
+                ? networkOf([...stats.networks][0]).name
+                : `${stats.networks.size} networks`}
           </span>
           <span className="topbar-time">
             <Icon name="clock" size={13} />
-            {lastCheckedLabel(db.wallets)}
+            {stats.lastCheck ? `checked ${relativeTime(stats.lastCheck)}` : 'not checked yet'}
           </span>
           <button
             type="button"
@@ -328,6 +643,16 @@ export default function App() {
           >
             <Icon name="refresh" size={14} className={checking ? 'spin' : undefined} />
             {checking ? 'Checking…' : 'Check now'}
+          </button>
+          <button
+            type="button"
+            className="icon-btn icon-btn-lg"
+            onClick={() => setShareOpen(db.wallets)}
+            disabled={db.wallets.length === 0}
+            aria-label="Share wallets"
+            title="Share / sync with another device"
+          >
+            <Icon name="share" size={17} />
           </button>
           <button
             type="button"
@@ -347,12 +672,66 @@ export default function App() {
           <span>{rpcError}</span>
           <button
             type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => void refresh()}
+            disabled={checking}
+          >
+            <Icon name="refresh" size={13} className={checking ? 'spin' : undefined} /> Retry
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => setDiagnosticsOpen((open) => !open)}
+          >
+            {diagnosticsOpen ? 'Hide details' : 'Details'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => void copyReport()}
+          >
+            <Icon name="copy" size={13} /> {reportCopied ? 'Copied' : 'Copy report'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => setSettingsOpen(true)}
+          >
+            Test connection
+          </button>
+          <button
+            type="button"
             className="icon-btn"
             onClick={() => setRpcError(null)}
             aria-label="Dismiss"
           >
             <Icon name="x" size={14} />
           </button>
+        </div>
+      )}
+
+      {rpcError && diagnosticsOpen && rpcReports.length > 0 && (
+        <div className="diagnostics">
+          {rpcReports.map((report) => (
+            <div className="diag-block" key={report.network}>
+              <p className="diag-head">
+                <strong>{networkOf(report.network).name}</strong>
+                {report.via
+                  ? ` — answered by ${rpcLabel(report.via)}`
+                  : ' — no endpoint answered'}
+              </p>
+              <ul className="diag-list">
+                {report.attempts.map((attempt) => (
+                  <li key={attempt.url} className={attempt.ok ? 'is-ok' : 'is-bad'}>
+                    <span className="diag-url">{rpcLabel(attempt.url)}</span>
+                    <span className="diag-meta">
+                      {attempt.ms}ms{attempt.error ? ` · ${attempt.error}` : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
       )}
 
@@ -365,30 +744,27 @@ export default function App() {
           </span>
         </div>
         <div className="stat">
-          <span className="stat-label">Assigned total</span>
-          <span className="stat-value mono">
-            {formatEth(totals.expected, 4)} <em>ETH</em>
+          <span className="stat-label">Assets tracked</span>
+          <span className="stat-value mono">{stats.assets}</span>
+          <span className="stat-sub">
+            {stats.nativeCount} native · {stats.tokenCount} ERC-20
           </span>
-          <span className="stat-sub">sum of the amounts you set</span>
+        </div>
+        <div className={`stat ${stats.offAssets > 0 ? 'is-off' : ''}`}>
+          <span className="stat-label">Off assigned amount</span>
+          <span className="stat-value mono">{stats.offAssets}</span>
+          <span className="stat-sub">
+            {stats.offAssets === 0
+              ? 'everything in line'
+              : `across ${stats.offWallets} wallet${stats.offWallets === 1 ? '' : 's'}`}
+          </span>
         </div>
         <div className="stat">
-          <span className="stat-label">On-chain total</span>
-          <span className="stat-value mono">
-            {formatEth(totals.counted ? totals.actual : null, 4)} <em>ETH</em>
-          </span>
+          <span className="stat-label">Networks in use</span>
+          <span className="stat-value mono">{stats.networks.size}</span>
           <span className="stat-sub">
-            {totals.counted} of {db.wallets.length} read live
-          </span>
-        </div>
-        <div className={`stat ${totals.off > 0 ? 'is-off' : ''}`}>
-          <span className="stat-label">Off assigned amount</span>
-          <span className="stat-value mono">{totals.off}</span>
-          <span className="stat-sub">
-            {totals.drift === null
-              ? 'waiting for a full reading'
-              : totals.drift === 0
-                ? 'everything in line'
-                : `${formatEthCompact(Math.abs(totals.drift))} ETH ${totals.drift < 0 ? 'short' : 'extra'}`}
+            auto-refresh{' '}
+            {db.settings.autoRefreshSeconds ? `every ${db.settings.autoRefreshSeconds}s` : 'off'}
           </span>
         </div>
       </section>
@@ -413,15 +789,28 @@ export default function App() {
                 className={`tab ${filter === 'off' ? 'is-active' : ''}`}
                 onClick={() => setFilter('off')}
               >
-                Off assigned <span className="tab-count">{totals.off}</span>
+                Off assigned <span className="tab-count">{stats.offWallets}</span>
               </button>
             </div>
-            <span className="list-updated">
-              auto-refresh{' '}
-              {db.settings.autoRefreshSeconds
-                ? `every ${db.settings.autoRefreshSeconds}s`
-                : 'off'}
-            </span>
+
+            {availableNetworks.length > 1 && (
+              <label className="network-filter">
+                <Icon name="globe" size={13} />
+                <select
+                  className="input input-compact"
+                  value={networkFilter}
+                  onChange={(e) => setNetworkFilter(e.target.value as NetworkFilter)}
+                  aria-label="Filter by network"
+                >
+                  <option value="all">All networks</option>
+                  {availableNetworks.map((network) => (
+                    <option key={network.id} value={network.id}>
+                      {network.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
 
           {db.wallets.length === 0 ? (
@@ -431,16 +820,17 @@ export default function App() {
               </span>
               <h2>Add your first watch-only wallet</h2>
               <p>
-                Paste the address of a hardware wallet, exchange deposit address or any cold wallet
-                and give it the amount it should hold. WatchVault reads the real balance from
-                Ethereum and flags the moment it no longer matches.
+                Paste the address of a hardware wallet, exchange deposit or any cold wallet on
+                Ethereum, Base, Arbitrum, OP Mainnet or Polygon, then give it the amount it should
+                hold. Balances are read live and flagged the moment they no longer match. No real
+                funds? Use Sepolia or Base Sepolia testnet ETH — free from a faucet.
               </p>
               <ul className="empty-points">
                 <li>
                   <Icon name="check" size={13} /> Never asks for a private key or seed phrase
                 </li>
                 <li>
-                  <Icon name="check" size={13} /> Reads balances straight from mainnet
+                  <Icon name="check" size={13} /> ETH and ERC-20 tracking, each with its own amount
                 </li>
                 <li>
                   <Icon name="check" size={13} /> Everything stays in this browser
@@ -449,8 +839,16 @@ export default function App() {
             </div>
           ) : visibleWallets.length === 0 ? (
             <div className="empty empty-small">
-              <h2>Nothing off its assigned amount</h2>
-              <p>Every watched wallet currently matches the amount you set. Nice.</p>
+              <h2>
+                {filter === 'off'
+                  ? 'Nothing off its assigned amount'
+                  : 'No wallets on this network yet'}
+              </h2>
+              <p>
+                {filter === 'off'
+                  ? 'Every watched asset currently matches the amount you set. Nice.'
+                  : 'Switch the network filter to see the rest of your watchlist.'}
+              </p>
             </div>
           ) : (
             <div className="wallet-list">
@@ -458,12 +856,18 @@ export default function App() {
                 <WalletCard
                   key={wallet.id}
                   wallet={wallet}
-                  toleranceEth={Number(db.settings.toleranceEth) || 0}
+                  toleranceNative={Number(db.settings.toleranceNative) || 0}
                   checking={checkingIds.includes(wallet.id)}
+                  readFailed={readFailedIds.includes(wallet.id)}
                   onRefresh={() => void refresh([wallet.id])}
                   onUpdate={(patch) => updateWallet(wallet.id, patch)}
                   onRemove={() => removeWallet(wallet)}
-                  onReconcile={() => reconcile(wallet)}
+                  onShare={() => setShareOpen([wallet])}
+                  onReconcileNative={() => reconcileNative(wallet)}
+                  onAddToken={(tokenAddress, amount) => addToken(wallet.id, tokenAddress, amount)}
+                  onUpdateToken={(tokenId, patch) => updateToken(wallet.id, tokenId, patch)}
+                  onRemoveToken={(tokenId) => removeToken(wallet.id, tokenId)}
+                  onReconcileToken={(token) => reconcileToken(wallet, token)}
                 />
               ))}
             </div>
@@ -471,7 +875,10 @@ export default function App() {
         </main>
 
         <aside className="side-column">
-          <WalletForm knownAddresses={db.wallets.map((wallet) => wallet.address)} onAdd={addWallet} />
+          <WalletForm
+            known={db.wallets.map((wallet) => ({ address: wallet.address, network: wallet.network }))}
+            onAdd={addWallet}
+          />
           <AlertLog alerts={db.alerts} onClear={() => commit((prev) => ({ ...prev, alerts: [] }))} />
           <p className="side-note">
             <Icon name="shield" size={13} /> WatchVault can only read. It cannot sign, send or move
@@ -480,10 +887,85 @@ export default function App() {
         </aside>
       </div>
 
+      {shareOpen !== null && shareOpen.length > 0 ? (
+        <SharePanel wallets={shareOpen} onClose={() => setShareOpen(null)} />
+      ) : null}
+
+      {incoming && sharePreview ? (
+        <div className="share-layer" role="dialog" aria-modal="true" aria-label="Add shared wallets">
+          <button
+            type="button"
+            className="share-scrim"
+            onClick={dismissIncoming}
+            aria-label="Close"
+          />
+          <div className="share-card share-card-sm">
+            <header className="share-head">
+              <h2>
+                <Icon name="download" size={16} />
+                {incoming.wallets.length === 1
+                  ? 'Add this shared wallet?'
+                  : `Add ${incoming.wallets.length} shared wallets?`}
+              </h2>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={dismissIncoming}
+                aria-label="Close"
+              >
+                <Icon name="x" size={15} />
+              </button>
+            </header>
+            <div className="share-body">
+              <ul className="share-list">
+                {incoming.wallets.map((wallet, index) => (
+                  <li key={`${wallet.network}:${wallet.address}:${index}`}>
+                    <span>{wallet.label}</span>
+                    <span className="mono">
+                      {networkOf(wallet.network).name} · {formatAmount(wallet.expectedNative)}{' '}
+                      {networkOf(wallet.network).nativeSymbol} assigned
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="share-hint">
+                Labels and assigned amounts travel with the link; balances are read fresh on this
+                device. Nothing is trusted until an RPC endpoint answers.
+              </p>
+              {sharePreview.skipped.length > 0 ? (
+                <p className="share-fine">
+                  {sharePreview.skipped.length} already on your watchlist — those are skipped.
+                </p>
+              ) : null}
+              <div className="share-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    applyIncoming(incoming)
+                    dismissIncoming()
+                  }}
+                  disabled={sharePreview.add.length === 0}
+                >
+                  <Icon name="plus" size={13} />
+                  {sharePreview.add.length === 0
+                    ? 'Nothing new to add'
+                    : `Add ${sharePreview.add.length === 1 ? 'wallet' : `${sharePreview.add.length} wallets`}`}
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={dismissIncoming}>
+                  Not now
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <SettingsPanel
         open={settingsOpen}
         settings={db.settings}
         walletCount={db.wallets.length}
+        networks={[...stats.networks]}
         onChange={updateSettings}
         onClose={() => setSettingsOpen(false)}
         onExport={exportData}
@@ -497,11 +979,49 @@ export default function App() {
   )
 }
 
+function transitionAlert(
+  wallet: Wallet,
+  asset: string,
+  previous: AssetStatus,
+  next: AssetStatus,
+  expected: string,
+  actual: string | null,
+  now: number,
+): AlertEntry | null {
+  if (next === previous) return null
+  const gap = formatCompact(assetGap(actual, expected))
+  const known = previous !== 'unknown'
+
+  if (known && next === 'below') {
+    return makeAlert(wallet, asset, 'moved-down', `${gap} ${asset} under the assigned amount — funds moved out`, expected, actual, now)
+  }
+  if (known && next === 'above') {
+    return makeAlert(wallet, asset, 'moved-up', `${gap} ${asset} over the assigned amount — funds moved in`, expected, actual, now)
+  }
+  if (known && next === 'match') {
+    return makeAlert(wallet, asset, 'back-in-line', `${asset} is back at the assigned amount`, expected, actual, now)
+  }
+  if (next === 'below' || next === 'above') {
+    return makeAlert(
+      wallet,
+      asset,
+      'mismatch',
+      `First reading is ${gap} ${asset} ${next === 'below' ? 'under' : 'over'} the assigned amount`,
+      expected,
+      actual,
+      now,
+    )
+  }
+  return null
+}
+
 function makeAlert(
   wallet: Wallet,
+  asset: string,
   kind: AlertEntry['kind'],
   message: string,
-  actualEth: string | null,
+  expected: string,
+  actual: string | null,
   at: number,
 ): AlertEntry {
   return {
@@ -509,18 +1029,12 @@ function makeAlert(
     walletId: wallet.id,
     label: wallet.label,
     address: wallet.address,
+    network: wallet.network,
+    asset,
     kind,
     message,
-    expectedEth: wallet.expectedEth,
-    actualEth,
+    expected,
+    actual,
     at,
   }
-}
-
-function lastCheckedLabel(wallets: Wallet[]): string {
-  const stamps = wallets
-    .map((wallet) => wallet.lastCheckedAt)
-    .filter((stamp): stamp is number => typeof stamp === 'number')
-  if (stamps.length === 0) return wallets.length ? 'not checked yet' : 'idle'
-  return `checked ${relativeTime(Math.max(...stamps))}`
 }

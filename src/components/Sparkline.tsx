@@ -13,7 +13,7 @@ const PAD = 3
 export function Sparkline({ history, expected }: Props) {
   if (history.length < 2) return null
 
-  const values = history.map((s) => Number(s.eth)).filter((n) => Number.isFinite(n))
+  const values = history.map((snapshot) => Number(snapshot.amount)).filter((n) => Number.isFinite(n))
   if (values.length < 2) return null
 
   const all = [...values, expected].filter((n) => Number.isFinite(n))
@@ -24,7 +24,9 @@ export function Sparkline({ history, expected }: Props) {
   const x = (i: number) => PAD + (i / (values.length - 1)) * (WIDTH - PAD * 2)
   const y = (v: number) => HEIGHT - PAD - ((v - min) / span) * (HEIGHT - PAD * 2)
 
-  const line = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(' ')
+  const line = values
+    .map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(2)},${y(v).toFixed(2)}`)
+    .join(' ')
   const last = values[values.length - 1]
   const drifted = Math.abs(last - expected) > 0
 
@@ -34,7 +36,7 @@ export function Sparkline({ history, expected }: Props) {
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       preserveAspectRatio="none"
       role="img"
-      aria-label={`Balance history, latest ${last} ETH, assigned ${expected} ETH`}
+      aria-label={`Balance history, latest ${last}, assigned ${expected}`}
     >
       <line
         x1={PAD}
