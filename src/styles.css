@@ -1711,3 +1711,56 @@ select.input optgroup {
   background: #0c121b;
   color: var(--text);
 }
+
+/* ---------- connection test ---------- */
+
+.probe-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.probe-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--line-soft);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+}
+
+.probe-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted-2);
+}
+
+.probe-row.is-ok .probe-dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.6);
+}
+
+.probe-row.is-bad .probe-dot {
+  background: var(--below);
+  box-shadow: 0 0 8px rgba(251, 113, 133, 0.6);
+}
+
+.probe-name {
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.probe-meta {
+  color: var(--muted-2);
+  font-size: 11.5px;
+  margin-left: auto;
+  text-align: right;
+}

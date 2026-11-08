@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { normalizeAmount } from '../lib/eth'
-import { NETWORK_LIST } from '../lib/networks'
+import { normalizeAmount, probeNetwork, type NetworkProbe } from '../lib/eth'
+import { networkOf, NETWORK_LIST } from '../lib/networks'
 import type { NetworkId, Settings } from '../lib/types'
 import { Icon } from './Icon'
 
@@ -8,6 +8,7 @@ interface Props {
   open: boolean
   settings: Settings
   walletCount: number
+  networks: NetworkId[]
   onChange: (patch: Partial<Settings>) => void
   onClose: () => void
   onExport: () => void
@@ -26,6 +27,7 @@ export function SettingsPanel({
   open,
   settings,
   walletCount,
+  networks,
   onChange,
   onClose,
   onExport,
@@ -39,6 +41,8 @@ export function SettingsPanel({
   const [tokenDraft, setTokenDraft] = useState(settings.toleranceToken)
   const [toleranceError, setToleranceError] = useState<string | null>(null)
   const [importMessage, setImportMessage] = useState<string | null>(null)
+  const [testing, setTesting] = useState(false)
+  const [probes, setProbes] = useState<NetworkProbe[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -207,6 +211,48 @@ export function SettingsPanel({
           </section>
 
           <section className="settings-group">
+            <h3>Connection test</h3>
+            <p className="settings-hint">
+              Asks each network for its chain id straight from this browser, exactly like a balance
+              read, and reports which endpoint answered.
+            </p>
+            <div className="settings-actions">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={testing}
+                onClick={() => {
+                  setTesting(true)
+                  const targets = networks.length > 0 ? networks : (['ethereum'] as NetworkId[])
+                  void Promise.all(
+                    targets.map((network) => probeNetwork(network, settings.customRpcs[network] ?? '')),
+                  )
+                    .then(setProbes)
+                    .finally(() => setTesting(false))
+                }}
+              >
+                <Icon name="refresh" size={14} className={testing ? 'spin' : undefined} />
+                {testing ? 'Testing…' : 'Test connections'}
+              </button>
+            </div>
+            {probes.length > 0 && (
+              <ul className="probe-list">
+                {probes.map((result) => (
+                  <li key={result.network} className={`probe-row ${result.ok ? 'is-ok' : 'is-bad'}`}>
+                    <span className="probe-dot" aria-hidden="true" />
+                    <span className="probe-name">{networkOf(result.network).name}</span>
+                    <span className="probe-meta">
+                      {result.ok
+                        ? `${hostOf(result.endpoint)} · ${result.ms}ms`
+                        : (result.probes.find((item) => !item.ok)?.note ?? 'failed')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="settings-group">
             <h3>RPC endpoints</h3>
             <p className="settings-hint">
               Leave a field empty to use the built-in public pool for that network. Point it at your
@@ -288,4 +334,14 @@ export function SettingsPanel({
       </aside>
     </div>
   )
+}
+
+function hostOf(url: string | null): string {
+  if (!url) return '—'
+  if (url.startsWith('/')) return 'built-in relay'
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
 }

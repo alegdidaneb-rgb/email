@@ -9,6 +9,7 @@ import {
   type Chain,
 } from 'viem'
 import { NETWORKS } from './networks'
+import { proxyUrl } from './rpcUpstreams'
 import type { AssetStatus, NetworkId } from './types'
 
 /**
@@ -18,14 +19,109 @@ import type { AssetStatus, NetworkId } from './types'
  */
 export function makeClient(network: NetworkId, customRpcUrl: string) {
   const config = NETWORKS[network] ?? NETWORKS.ethereum
-  const urls = customRpcUrl.trim() ? [customRpcUrl.trim()] : config.rpcUrls
+  // Direct endpoints first; the same-origin relay is the last resort so a
+  // blocked or CORS-hostile provider can never take reading offline.
+  const urls = customRpcUrl.trim()
+    ? [customRpcUrl.trim()]
+    : [...config.rpcUrls, proxyUrl(network)]
   return createPublicClient({
     chain: config.chain as Chain,
     transport: fallback(
-      urls.map((url) => http(url, { timeout: 10_000, retryCount: 0 })),
+      urls.map((url) => http(url, { timeout: 8_000, retryCount: 0 })),
       { rank: false, retryCount: 0 },
     ),
   })
+}
+
+export interface EndpointProbe {
+  url: string
+  ok: boolean
+  ms: number
+  status: number
+  note?: string
+}
+
+export interface NetworkProbe {
+  network: NetworkId
+  ok: boolean
+  endpoint: string | null
+  ms: number | null
+  probes: EndpointProbe[]
+}
+
+/**
+ * Tries every endpoint for a network exactly the way the app does, from this
+ * browser, and reports which one answered (or why each failed).
+ */
+export async function probeNetwork(
+  network: NetworkId,
+  customRpcUrl = '',
+): Promise<NetworkProbe> {
+  const config = NETWORKS[network] ?? NETWORKS.ethereum
+  const urls = customRpcUrl.trim()
+    ? [customRpcUrl.trim()]
+    : [...config.rpcUrls, proxyUrl(network)]
+  const probes: EndpointProbe[] = []
+
+  for (const url of urls) {
+    const started = Date.now()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 7_000)
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+        signal: controller.signal,
+      })
+      const text = await response.text()
+      const ms = Date.now() - started
+      let ok = response.ok
+      let note = response.ok ? '' : `HTTP ${response.status}`
+      if (ok) {
+        try {
+          const parsed = JSON.parse(text) as { result?: string; error?: { message?: string } }
+          if (parsed.error) {
+            ok = false
+            note = parsed.error.message ?? 'RPC error'
+          } else if (typeof parsed.result === 'string') {
+            const chainId = Number.parseInt(parsed.result, 16)
+            if (Number.isFinite(chainId) && chainId !== config.chain.id) {
+              ok = false
+              note = `wrong chain (${chainId})`
+            } else {
+              note = `chain ${chainId}`
+            }
+          } else {
+            ok = false
+            note = 'unexpected response'
+          }
+        } catch {
+          ok = false
+          note = 'unreadable response'
+        }
+      }
+      probes.push({ url, ok, ms, status: response.status, note })
+      if (ok) return { network, ok: true, endpoint: url, ms, probes }
+    } catch (error) {
+      probes.push({
+        url,
+        ok: false,
+        ms: Date.now() - started,
+        status: 0,
+        note:
+          error instanceof Error
+            ? error.name === 'AbortError'
+              ? 'timed out'
+              : error.message
+            : 'failed',
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  return { network, ok: false, endpoint: null, ms: null, probes }
 }
 
 export type EthClient = ReturnType<typeof makeClient>

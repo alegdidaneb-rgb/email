@@ -46,8 +46,12 @@ does not create 25 ETH — it produces a red "short by 25 ETH" flag, which is th
 - **Custom amount per asset** — native and each token independently; edit any time.
 - **Drift detection** — "in line", "below assigned", "above assigned", with the exact gap and
   one-click `Assign current amount` to re-baseline after an expected move.
-- **Live balances** — read in the browser from a per-network pool of public keyless RPC endpoints
-  with automatic failover, or point any network at your own node.
+- **Live balances that always land** — the browser tries a per-network pool of verified keyless
+  RPC endpoints, then falls back to a **same-origin relay** (`/api/rpc`) that runs as a Vercel
+  serverless function. CORS, firewalls and rate limits can no longer make a read fail silently.
+  Point any network at your own node instead if you prefer.
+- **Connection test** — Settings → *Test connections* asks each network for its chain id the same
+  way a balance read does and shows which endpoint answered, in milliseconds.
 - **Activity log + desktop notifications** — one entry per real movement, tagged with network and
   asset.
 - **Tolerances** — separate for native units and token units (defaults ±0.0005 and ±0.01).
@@ -62,6 +66,7 @@ npm install
 npm run dev        # http://localhost:5173
 npm run build      # production bundle in dist/
 npm run smoke      # headless jsdom test against a mocked RPC
+npm run test:relay # unit test for the same-origin RPC relay
 ```
 
 ## How a reading works
@@ -69,7 +74,9 @@ npm run smoke      # headless jsdom test against a mocked RPC
 1. The address is validated and stored in EIP-55 checksummed form, alongside its network.
 2. One JSON-RPC call per asset is made from your browser — `eth_getBalance` for the native coin,
    `eth_call` (`balanceOf`) for each tracked token — through that network's endpoint pool
-   (publicnode, Cloudflare, llamarpc, drpc, 1rpc, ankr, official L2 gateways, Sepolia endpoints).
+   (PublicNode, dRPC, 1RPC, Flashbots, merkle, official L2 gateways, Sepolia endpoints). If every
+   direct host is blocked, the call goes to `/api/rpc` on this app's own origin, which relays it
+   server-side to the same pool.
 3. Each balance is compared to its assigned amount with the matching tolerance applied.
 4. Status changes are written to the activity log (and notified, if enabled). Status is persisted,
    so you get one alert per real move, not one per refresh.
@@ -88,6 +95,7 @@ npm run smoke      # headless jsdom test against a mocked RPC
 src/
   App.tsx                 state, multi-asset refresh, alerts, stats
   lib/networks.ts         per-network config: viem chain, RPC pool, explorer, faucet
+  lib/rpcUpstreams.ts     re-export of the shared endpoint list
   lib/eth.ts              clients, native + ERC-20 reads, validation, status logic
   lib/storage.ts          versioned persistence, v1 -> v2 migration, import validation
   lib/format.ts           amount/address/time formatting
@@ -97,7 +105,10 @@ src/
     SettingsPanel.tsx     tolerances, auto-refresh, notifications, per-network RPC, backup
     AlertLog.tsx          activity feed
     Sparkline.tsx         native balance history with assigned-amount line
-scripts/smoke.mjs         end-to-end render test with a mocked RPC (35 checks)
+api/rpc.js                same-origin JSON-RPC relay (Vercel function)
+shared/rpc-upstreams.js   one endpoint list for app, dev relay and serverless relay
+scripts/smoke.mjs         end-to-end render test with a mocked RPC (36 checks)
+scripts/test-relay.mjs    relay unit test: failover, validation, health probe (14 checks)
 ```
 
 ## Limits worth knowing
@@ -107,5 +118,8 @@ scripts/smoke.mjs         end-to-end render test with a mocked RPC (35 checks)
 - Token detection relies on `symbol()`/`decimals()`; rare contracts returning `bytes32` symbols
   fall back to a shortened contract address.
 - Public RPCs are rate limited — heavy polling across many wallets may get throttled; use your own
-  endpoint for larger lists.
+  endpoint for larger lists. Keyless access churns: Ankr now demands a key, llamarpc answers 525
+  and Cloudflare's gateway is mostly down, so those were removed in Nov 2026.
+- The relay only works when the app is served (Vite dev server or Vercel). Opened as a bare static
+  file, the app relies on direct endpoints alone.
 - It is a monitor, not a wallet: to move funds you need the key, which this app never has.

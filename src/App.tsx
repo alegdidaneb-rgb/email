@@ -130,7 +130,7 @@ export default function App() {
 
       if (values.size === 0) {
         setRpcError(
-          'No RPC endpoint answered for these networks. Check your connection, or set your own endpoint under Settings.',
+          'No RPC endpoint answered for these networks. Use “Test connection” below to see which endpoint is blocked, or set your own under Settings.',
         )
         setCheckingIds([])
         return
@@ -539,6 +539,21 @@ export default function App() {
           <span>{rpcError}</span>
           <button
             type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => void refresh()}
+            disabled={checking}
+          >
+            <Icon name="refresh" size={13} className={checking ? 'spin' : undefined} /> Retry
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => setSettingsOpen(true)}
+          >
+            Test connection
+          </button>
+          <button
+            type="button"
             className="icon-btn"
             onClick={() => setRpcError(null)}
             aria-label="Dismiss"
@@ -702,6 +717,7 @@ export default function App() {
         open={settingsOpen}
         settings={db.settings}
         walletCount={db.wallets.length}
+        networks={[...stats.networks]}
         onChange={updateSettings}
         onClose={() => setSettingsOpen(false)}
         onExport={exportData}

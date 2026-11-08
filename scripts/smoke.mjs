@@ -69,7 +69,9 @@ function answer(call) {
   }
 }
 
-globalThis.fetch = async (_url, init) => {
+let relayCalls = 0
+
+function rpcResponse(init) {
   const payload = JSON.parse(init.body)
   const handle = (call) => ({ jsonrpc: '2.0', id: call.id ?? 1, result: answer(call) })
   const body = Array.isArray(payload) ? payload.map(handle) : handle(payload)
@@ -77,6 +79,18 @@ globalThis.fetch = async (_url, init) => {
     status: 200,
     headers: { 'content-type': 'application/json' },
   })
+}
+
+// Simulates a strict browser: every public RPC host is blocked (CORS/firewall),
+// so only the locally configured endpoint and the same-origin relay can answer.
+globalThis.fetch = async (url, init) => {
+  const target = String(url)
+  if (target.startsWith('/api/rpc')) {
+    relayCalls += 1
+    return rpcResponse(init)
+  }
+  if (target.startsWith('http://127.0.0.1')) return rpcResponse(init)
+  throw new TypeError('Failed to fetch')
 }
 
 /* ---- seed a v1 database to exercise the migration ----------------------- */
@@ -197,6 +211,11 @@ check('wallet added on Base', Boolean(baseCard))
 check('Base badge rendered', baseCard?.textContent?.includes('Base'))
 check('base native balance read', baseCard?.textContent?.includes('Matches'))
 check('native symbol follows network', baseCard?.textContent?.includes('ETH'))
+check(
+  'falls back to the same-origin relay when direct endpoints are blocked',
+  relayCalls > 0,
+  `relayCalls=${relayCalls}`,
+)
 
 /* ERC-20 tracking */
 clickButton(baseCard, 'Track ERC-20 token')
