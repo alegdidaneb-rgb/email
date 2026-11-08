@@ -760,6 +760,18 @@ select.input {
   color: var(--muted);
 }
 
+/* The amount you assigned is the figure you track, so it leads; the live
+   on-chain reading sits beside it in a quieter voice. */
+.metric-primary .metric-value {
+  font-size: 30px;
+  letter-spacing: -0.035em;
+}
+
+.metric-secondary .metric-value {
+  font-size: 17px;
+}
+
+
 .wallet-delta {
   margin-top: 8px;
 }

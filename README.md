@@ -31,9 +31,12 @@ amount. Real on-chain reads, zero cost, and nothing that could be mistaken for a
 | —                                   | Flags drift, logs it, optionally fires a desktop notification        |
 | —                                   | Keeps native balance history and a per-wallet sparkline               |
 
-The assigned amount is a **reference target**, not a display override: every balance shown is the
-real on-chain value, so the numbers on screen can be trusted. Assigning 25 ETH to an empty wallet
-does not create 25 ETH — it produces a red "short by 25 ETH" flag, which is the point.
+On the card the **amount you assigned is the big figure** — it is the number you typed and the thing
+you are tracking — and the live on-chain reading sits right beside it ("On-chain now", quieter, with
+the red/amber/green flag and the exact gap). Both numbers are always visible: assigning 25 ETH to an
+empty wallet does not create 25 ETH, it reads *Assigned 25 ETH / On-chain 0 ETH · short by 25 ETH,
+nothing on-chain yet*, and the pill says **Not funded yet**. The chain value is always the truth; the
+assigned value is your target, never faked.
 
 ## Features
 
@@ -43,7 +46,8 @@ does not create 25 ETH — it produces a red "short by 25 ETH" flag, which is th
   network, and the same address can be watched on several networks at once.
 - **ERC-20 tracking per wallet** — paste a token contract, WatchVault detects symbol and decimals
   on chain, then tracks the balance against its own assigned amount.
-- **Custom amount per asset** — native and each token independently; edit any time.
+- **Custom amount per asset** — native and each token independently; the assigned amount leads the
+  card so the number you care about is the one you see first. Edit any time.
 - **Drift detection** — "in line", "below assigned", "above assigned", with the exact gap and
   one-click `Assign current amount` to re-baseline after an expected move.
 - **Live balances that always land** — every balance read races a per-network pool of verified
@@ -88,7 +92,8 @@ npm run test:share     # unit test for share links: round-trip, rejection, de-du
    `/api/rpc` on this app's own origin, which relays server-side to the same pool; the first
    answer wins and the losers are ignored. If nothing answers, the app retries once quietly, then
    reports exactly what it tried.
-3. Each balance is compared to its assigned amount with the matching tolerance applied.
+3. Each balance is compared to its assigned amount with the matching tolerance applied, and the
+   card shows the assigned figure large with the live reading next to it.
 4. Status changes are written to the activity log (and notified, if enabled). Status is persisted,
    so you get one alert per real move, not one per refresh.
 
@@ -139,7 +144,7 @@ src/
     Sparkline.tsx         native balance history with assigned-amount line
 api/rpc.js                same-origin JSON-RPC relay (Vercel function)
 shared/rpc-upstreams.js   one endpoint list for app, dev relay and serverless relay
-scripts/smoke.mjs         end-to-end render test with a mocked RPC (61 checks)
+scripts/smoke.mjs         end-to-end render test with a mocked RPC (69 checks)
 scripts/test-relay.mjs    relay unit test: failover, validation, health probe (14 checks)
 scripts/test-transport.mjs racing transport unit test: first-win, errors, custom RPC (14 checks)
 scripts/test-share.mjs    share payloads: round-trip, hostile input, de-duplication (41 checks)

@@ -239,7 +239,11 @@ await sleep(700)
 
 check('token symbol detected', baseCard.textContent?.includes('USDC'))
 check('token balance read', baseCard.textContent?.includes('1,200'))
-check('token assigned shown', baseCard.textContent?.includes('assigned 1,200'))
+check('token assigned shown', baseCard.textContent?.includes('assigned · on-chain'))
+check(
+  'assigned amount leads the token row',
+  baseCard.querySelector('.token-balance')?.textContent?.includes('1,200'),
+)
 check('token in line', baseCard.textContent?.includes('in line'))
 check(
   'token persisted',
@@ -307,6 +311,43 @@ check('shortfall shown', cardFor('Base treasury')?.textContent?.includes('Short 
 clickButton(cardFor('Base treasury'), 'Assign current amount')
 await sleep(400)
 check('native reconcile clears drift', cardFor('Base treasury')?.textContent?.includes('Within'))
+
+/* the amount you assigned leads the card; the chain's reading rides alongside */
+const metricLabels = [...cardFor('Base treasury').querySelectorAll('.metric-label')]
+check('assigned amount is the leading metric', metricLabels[0]?.textContent === 'Assigned amount')
+check(
+  'on-chain reading is the secondary metric',
+  metricLabels[1]?.textContent?.startsWith('On-chain now'),
+)
+check(
+  'the assigned figure is the big one',
+  cardFor('Base treasury')
+    .querySelector('.metric-primary .metric-value')
+    ?.textContent?.includes('0.4'),
+)
+
+/* an address holding nothing says so in plain words */
+nativeWei = 0n
+clickButton(window.document, 'Check now')
+await sleep(800)
+check(
+  'empty address shows nothing on-chain',
+  cardFor('Base treasury')?.textContent?.includes('nothing on-chain yet'),
+)
+check('empty address is named plainly', cardFor('Base treasury')?.textContent?.includes('Not funded yet'))
+check(
+  'the assigned amount stays on an empty card',
+  cardFor('Base treasury')
+    .querySelector('.metric-primary .metric-value')
+    ?.textContent?.includes('0.4'),
+)
+nativeWei = 400_000_000_000_000_000n
+clickButton(window.document, 'Check now')
+await sleep(800)
+check(
+  'a funded reading clears the empty state',
+  !cardFor('Base treasury')?.textContent?.includes('Not funded yet'),
+)
 
 /* sharing: QR for Trust Wallet, link for another device */
 clickAria(cardFor('Base treasury'), 'Share this wallet')

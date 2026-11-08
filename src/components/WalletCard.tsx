@@ -67,9 +67,17 @@ export function WalletCard({
   const [tokenDraftAmount, setTokenDraftAmount] = useState('')
 
   const overall = combineStatus([wallet.status, ...wallet.tokens.map((token) => token.status)])
-  const meta = statusCopy[overall]
+  const actualNative = wallet.lastNative === null ? null : Number(wallet.lastNative)
+  // An assigned amount on an address that holds nothing is worth naming plainly:
+  // "not funded yet" says what "below assigned" only implies.
+  const unfunded =
+    actualNative === 0 && Number(wallet.expectedNative) > 0 && overall === 'below'
+  const meta = unfunded
+    ? { label: 'Not funded yet', className: statusCopy.below.className }
+    : statusCopy[overall]
 
-  const actual = wallet.lastNative === null ? null : Number(wallet.lastNative)
+  const actual = actualNative
+  const isEmpty = actualNative !== null && actualNative === 0
   const expected = Number(wallet.expectedNative)
   const diff = actual === null ? null : actual - expected
   const offBy = diff !== null && Math.abs(diff) > Math.max(toleranceNative, 0) ? diff : null
@@ -231,17 +239,17 @@ export function WalletCard({
       ) : (
         <>
           <div className="wallet-metrics">
-            <div className="metric">
-              <span className="metric-label">On-chain now</span>
+            <div className="metric metric-primary">
+              <span className="metric-label">Assigned amount</span>
               <span className="metric-value mono">
-                {formatAmount(wallet.lastNative, 6)}
+                {formatAmount(wallet.expectedNative, 6)}
                 <em>{config.nativeSymbol}</em>
               </span>
             </div>
-            <div className="metric metric-right">
-              <span className="metric-label">Assigned</span>
+            <div className="metric metric-right metric-secondary">
+              <span className="metric-label">On-chain now</span>
               <span className="metric-value mono">
-                {formatAmount(wallet.expectedNative, 6)}
+                {formatAmount(wallet.lastNative, 6)}
                 <em>{config.nativeSymbol}</em>
               </span>
             </div>
@@ -263,7 +271,11 @@ export function WalletCard({
                 {offBy < 0 ? 'Short by' : 'Over by'} {formatCompact(Math.abs(offBy))}{' '}
                 {config.nativeSymbol}
                 {' · '}
-                {offBy < 0 ? 'funds left this wallet' : 'funds arrived'}
+                {isEmpty
+                  ? 'nothing on-chain yet'
+                  : offBy < 0
+                    ? 'funds left this wallet'
+                    : 'funds arrived'}
                 <button type="button" className="link-btn" onClick={onReconcileNative}>
                   Assign current amount
                 </button>
@@ -297,7 +309,7 @@ export function WalletCard({
                       <span className="token-dot" aria-hidden="true" />
                       <div className="token-main">
                         <span className="token-balance mono">
-                          {formatTokenAmount(token.lastAmount, token.decimals)}
+                          {formatAmount(token.expectedAmount, 6)}
                           <em>{token.symbol}</em>
                         </span>
                         {editingTokenId === token.id ? (
@@ -326,7 +338,8 @@ export function WalletCard({
                           </span>
                         ) : (
                           <span className="token-sub">
-                            assigned {formatAmount(token.expectedAmount, 6)}
+                            assigned · on-chain{' '}
+                            {formatTokenAmount(token.lastAmount, token.decimals)}
                             {gap === null
                               ? ' · not checked'
                               : token.status === 'match'
