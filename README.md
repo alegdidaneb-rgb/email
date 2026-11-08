@@ -51,8 +51,8 @@ does not create 25 ETH — it produces a red "short by 25 ETH" flag, which is th
   and takes whichever answers first. CORS, firewalls, rate limits and dead providers can't make a
   read fail silently. Point any network at your own node instead if you prefer.
 - **Self-explaining failures** — one quiet automatic retry, a per-wallet "couldn't read" flag, a
-  banner that names every endpoint it tried with latency and error, and Settings → *Test
-  connections* for a manual probe.
+  banner that names every endpoint it tried with latency and error, a **Copy report** button that
+  puts that text on your clipboard, and Settings → *Test connections* for a manual probe.
 - **Connection test** — Settings → *Test connections* asks each network for its chain id the same
   way a balance read does and shows which endpoint answered, in milliseconds.
 - **Activity log + desktop notifications** — one entry per real movement, tagged with network and
@@ -113,7 +113,7 @@ src/
     Sparkline.tsx         native balance history with assigned-amount line
 api/rpc.js                same-origin JSON-RPC relay (Vercel function)
 shared/rpc-upstreams.js   one endpoint list for app, dev relay and serverless relay
-scripts/smoke.mjs         end-to-end render test with a mocked RPC (41 checks)
+scripts/smoke.mjs         end-to-end render test with a mocked RPC (45 checks)
 scripts/test-relay.mjs    relay unit test: failover, validation, health probe (14 checks)
 scripts/test-transport.mjs racing transport unit test: first-win, errors, custom RPC (14 checks)
 ```

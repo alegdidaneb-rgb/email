@@ -312,6 +312,22 @@ clickButton(window.document, 'Details')
 await sleep(150)
 check('diagnostics name the attempted endpoints', text().includes('built-in relay'))
 
+let copiedReport = ''
+Object.defineProperty(window.navigator, 'clipboard', {
+  configurable: true,
+  value: {
+    writeText: async (value) => {
+      copiedReport = value
+    },
+  },
+})
+clickButton(window.document, 'Copy report')
+await sleep(150)
+check('copy report fills the clipboard', copiedReport.includes('RPC report'))
+check('copied report names the relay', copiedReport.includes('built-in relay'))
+check('copied report keeps the failure reason', /fail .+·|fail /.test(copiedReport))
+check('copy button confirms', text().includes('Copied'))
+
 /* recovery */
 blockAll = false
 clickButton(window.document, 'Check now')

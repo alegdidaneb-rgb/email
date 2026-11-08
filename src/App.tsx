@@ -49,6 +49,7 @@ export default function App() {
   const [rpcError, setRpcError] = useState<string | null>(null)
   const [rpcReports, setRpcReports] = useState<RpcReport[]>([])
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [reportCopied, setReportCopied] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [filter, setFilter] = useState<Filter>('all')
   const [networkFilter, setNetworkFilter] = useState<NetworkFilter>('all')
@@ -85,6 +86,37 @@ export default function App() {
       }
     }
   }, [])
+
+  const copyReport = useCallback(async () => {
+    const lines = [
+      `WatchVault RPC report — ${new Date().toLocaleString()}`,
+      `page: ${window.location.href}`,
+      `browser: ${navigator.userAgent}`,
+      `problem: ${rpcError ?? 'balance read failed'}`,
+    ]
+    for (const report of rpcReports) {
+      lines.push(
+        '',
+        `${networkOf(report.network).name}: ${
+          report.via ? `answered by ${rpcLabel(report.via)}` : 'no endpoint answered'
+        }`,
+      )
+      for (const attempt of report.attempts) {
+        lines.push(
+          `  ${attempt.ok ? 'ok  ' : 'fail'} ${rpcLabel(attempt.url)} · ${attempt.ms}ms${
+            attempt.error ? ` · ${attempt.error}` : ''
+          }`,
+        )
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'))
+      setReportCopied(true)
+      window.setTimeout(() => setReportCopied(false), 1800)
+    } catch {
+      /* clipboard blocked — the Details panel still shows everything */
+    }
+  }, [rpcError, rpcReports])
 
   const refresh = useCallback(
     async (ids?: string[], pass = 1) => {
@@ -572,6 +604,13 @@ export default function App() {
             onClick={() => setDiagnosticsOpen((open) => !open)}
           >
             {diagnosticsOpen ? 'Hide details' : 'Details'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={() => void copyReport()}
+          >
+            <Icon name="copy" size={13} /> {reportCopied ? 'Copied' : 'Copy report'}
           </button>
           <button
             type="button"
