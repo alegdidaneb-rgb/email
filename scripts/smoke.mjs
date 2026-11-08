@@ -26,6 +26,7 @@ globalThis.HTMLSelectElement = window.HTMLSelectElement
 globalThis.Event = window.Event
 globalThis.KeyboardEvent = window.KeyboardEvent
 globalThis.localStorage = window.localStorage
+globalThis.history = window.history
 globalThis.Notification = undefined
 
 Object.defineProperty(globalThis, 'navigator', { value: window.navigator, configurable: true })
@@ -175,6 +176,15 @@ function clickButton(rootEl, label) {
   return Boolean(button)
 }
 
+function clickAria(rootEl, label) {
+  const target = rootEl?.querySelector(`[aria-label="${label}"]`)
+  target?.click()
+  return Boolean(target)
+}
+
+const sharePayload = (wallets) =>
+  `wv1.${Buffer.from(JSON.stringify({ version: 1, sharedAt: Date.now(), wallets })).toString('base64url')}`
+
 console.log('\nWatchVault smoke test\n')
 
 await import(resolve(root, 'node_modules/.smoke/app.mjs'))
@@ -297,6 +307,72 @@ check('shortfall shown', cardFor('Base treasury')?.textContent?.includes('Short 
 clickButton(cardFor('Base treasury'), 'Assign current amount')
 await sleep(400)
 check('native reconcile clears drift', cardFor('Base treasury')?.textContent?.includes('Within'))
+
+/* sharing: QR for Trust Wallet, link for another device */
+clickAria(cardFor('Base treasury'), 'Share this wallet')
+await sleep(300)
+const sharePanel = window.document.querySelector('.share-card')
+check('share sheet opens for a wallet', Boolean(sharePanel))
+check('share sheet names the wallet', sharePanel?.textContent?.includes('Base treasury'))
+check(
+  'trust wallet steps are spelled out',
+  sharePanel?.textContent?.includes('View-only wallet'),
+)
+check('address QR is rendered', Boolean(sharePanel?.querySelector('.qr-frame svg')))
+const shareHref = sharePanel?.querySelector('a.btn')?.getAttribute('href') ?? ''
+check('link points at this app', shareHref.startsWith('http://localhost:5173/'))
+check('link carries the wallet payload', shareHref.includes('#i=wv1.'))
+
+let copiedShareLink = ''
+Object.defineProperty(window.navigator, 'clipboard', {
+  configurable: true,
+  value: {
+    writeText: async (value) => {
+      copiedShareLink = value
+    },
+  },
+})
+clickButton(sharePanel, 'Copy link')
+await sleep(120)
+check('copy link copies the share url', copiedShareLink.split('#')[1] === shareHref.split('#')[1])
+clickAria(sharePanel.querySelector('.share-head'), 'Close')
+await sleep(150)
+check('share sheet closes', !window.document.querySelector('.share-card'))
+
+/* the same bundle arriving on a second device */
+window.location.hash = `#i=${sharePayload([
+  { address: '0xd8da6bf26964af9d7eed9e03e53415d37aa96045', network: 'ethereum', label: 'Cold storage', expectedNative: '1', tokens: [] },
+])}`
+window.dispatchEvent(new window.Event('hashchange'))
+await sleep(250)
+check('a known wallet is recognised as a duplicate', text().includes('Nothing new to add'))
+clickButton(window.document.querySelector('.share-card'), 'Not now')
+await sleep(150)
+check('cancelling the import closes it', !text().includes('Nothing new to add'))
+
+window.location.hash = `#i=${sharePayload([
+  {
+    address: '0x1111111111111111111111111111111111111111',
+    network: 'base',
+    label: 'Phone wallet',
+    expectedNative: '0.5',
+    tokens: [],
+  },
+])}`
+window.dispatchEvent(new window.Event('hashchange'))
+await sleep(250)
+check('an import prompt appears', text().includes('Add this shared wallet?'))
+check('prompt shows the assigned amount', text().includes('0.5 ETH assigned'))
+clickButton(window.document.querySelector('.share-card'), 'Add wallet')
+await sleep(700)
+const phoneCard = cardFor('Phone wallet')
+check('shared wallet lands on this device', Boolean(phoneCard))
+check('assigned amount travelled with it', phoneCard?.textContent?.includes('0.5'))
+check('the link is cleared after import', window.location.hash === '')
+check(
+  'the imported wallet is persisted',
+  (window.localStorage.getItem('watchvault.db.v1') ?? '').includes('Phone wallet'),
+)
 
 /* total outage: nothing answers, anywhere */
 blockAll = true

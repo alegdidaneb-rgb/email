@@ -18,6 +18,8 @@ export type IconName =
   | 'clock'
   | 'globe'
   | 'token'
+  | 'share'
+  | 'phone'
 
 const paths: Record<IconName, ReactNode> = {
   refresh: (
@@ -39,6 +41,21 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <rect x="9" y="9" width="12" height="12" rx="2" />
       <path d="M5 15V5a2 2 0 0 1 2-2h8" />
+    </>
+  ),
+  share: (
+    <>
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <path d="M8.6 10.6 15.4 6.4" />
+      <path d="M8.6 13.4l6.8 4.2" />
+    </>
+  ),
+  phone: (
+    <>
+      <rect x="7" y="2.5" width="10" height="19" rx="2.5" />
+      <path d="M11 18.5h2" />
     </>
   ),
   check: <path d="M20 6 9 17l-5-5" />,

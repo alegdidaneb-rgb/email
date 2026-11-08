@@ -11,14 +11,17 @@
     "typecheck": "tsc -b --noEmit",
     "smoke": "node scripts/smoke.mjs",
     "test:relay": "node scripts/test-relay.mjs",
-    "test:transport": "node scripts/test-transport.mjs"
+    "test:transport": "node scripts/test-transport.mjs",
+    "test:share": "node scripts/test-share.mjs"
   },
   "dependencies": {
+    "qrcode-generator": "^2.0.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "viem": "^2.21.55"
   },
   "devDependencies": {
+    "@types/qrcode-generator": "^1.0.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

@@ -53,6 +53,11 @@ does not create 25 ETH — it produces a red "short by 25 ETH" flag, which is th
 - **Self-explaining failures** — one quiet automatic retry, a per-wallet "couldn't read" flag, a
   banner that names every endpoint it tried with latency and error, a **Copy report** button that
   puts that text on your clipboard, and Settings → *Test connections* for a manual probe.
+- **Same wallet on every device** — the share button on a card (or the header) produces a QR code
+  and a link that carry the address, network, label, assigned amount and tokens. Open it on another
+  phone or laptop and the wallet is there, already assigned — no retyping.
+- **Trust Wallet hand-off** — the same sheet shows the bare address as a QR with the exact
+  view-only (watch) import steps, so Trust Wallet on any phone can mirror the same address.
 - **Connection test** — Settings → *Test connections* asks each network for its chain id the same
   way a balance read does and shows which endpoint answered, in milliseconds.
 - **Activity log + desktop notifications** — one entry per real movement, tagged with network and
@@ -71,6 +76,7 @@ npm run build      # production bundle in dist/
 npm run smoke      # headless jsdom test against a mocked RPC
 npm run test:relay # unit test for the same-origin RPC relay
 npm run test:transport # unit test for the racing JSON-RPC transport
+npm run test:share     # unit test for share links: round-trip, rejection, de-duplication
 ```
 
 ## How a reading works
@@ -86,13 +92,30 @@ npm run test:transport # unit test for the racing JSON-RPC transport
 4. Status changes are written to the activity log (and notified, if enabled). Status is persisted,
    so you get one alert per real move, not one per refresh.
 
+## Carrying a wallet to another device
+
+Tap the share icon on a card (or in the header, to move the whole watchlist). Two things come out:
+
+1. **A QR code of the address**, plus the numbered Trust Wallet path — *Settings → Wallets → + →
+   Add existing wallet → View-only wallet*, pick the network, scan, name it, confirm. That mirrors
+   the address on the phone. Trust Wallet then shows the *real* on-chain balance, because that is
+   what a view-only wallet does; the amount you assigned lives in WatchVault only, so it never
+   changes what the chain reports.
+2. **A share link / QR for WatchVault itself** — `…/#i=wv1.<payload>`. Open it on another device
+   and a prompt offers to add the wallet with its label, network, assigned amount and tokens.
+   Addresses already on that watchlist are skipped, and every balance is read fresh afterwards.
+
+The payload is public data only: address, network, label, amounts, token contracts. There is no key
+material to leak, because the app never has any.
+
 ## Privacy
 
 - Everything (addresses, labels, amounts, tokens, history) lives in your browser's `localStorage`.
 - The only outbound traffic is the balance query to the endpoint you choose. Public endpoints see
   which address you look up; for full privacy set your own RPC under **Settings → RPC endpoints**
   (per network, e.g. `http://localhost:8545`).
-- Export JSON contains public addresses only — never secrets, because none are ever collected.
+- Export JSON and share links contain public addresses and amounts only — never secrets, because
+  none are ever collected.
 
 ## Project layout
 
@@ -103,6 +126,7 @@ src/
   lib/rpcUpstreams.ts     re-export of the shared endpoint list
   lib/transport.ts        racing JSON-RPC transport + per-network diagnostics
   lib/eth.ts              clients, native + ERC-20 reads, validation, status logic
+  lib/share.ts            wv1. share payloads: encode, validate, merge, Trust Wallet steps
   lib/storage.ts          versioned persistence, v1 -> v2 migration, import validation
   lib/format.ts           amount/address/time formatting
   components/
@@ -110,12 +134,15 @@ src/
     WalletCard.tsx        native + token holdings, drift, edit, reconcile
     SettingsPanel.tsx     tolerances, auto-refresh, notifications, per-network RPC, backup
     AlertLog.tsx          activity feed
+    SharePanel.tsx        QR + link sheet: Trust Wallet hand-off and cross-device import
+    QrCode.tsx            inline-SVG QR, encoder loaded on demand
     Sparkline.tsx         native balance history with assigned-amount line
 api/rpc.js                same-origin JSON-RPC relay (Vercel function)
 shared/rpc-upstreams.js   one endpoint list for app, dev relay and serverless relay
-scripts/smoke.mjs         end-to-end render test with a mocked RPC (45 checks)
+scripts/smoke.mjs         end-to-end render test with a mocked RPC (61 checks)
 scripts/test-relay.mjs    relay unit test: failover, validation, health probe (14 checks)
 scripts/test-transport.mjs racing transport unit test: first-win, errors, custom RPC (14 checks)
+scripts/test-share.mjs    share payloads: round-trip, hostile input, de-duplication (41 checks)
 ```
 
 ## Limits worth knowing
@@ -130,3 +157,5 @@ scripts/test-transport.mjs racing transport unit test: first-win, errors, custom
 - The relay only works when the app is served (Vite dev server or Vercel). Opened as a bare static
   file, the app relies on direct endpoints alone.
 - It is a monitor, not a wallet: to move funds you need the key, which this app never has.
+- Share links are plain text: whoever holds one learns the address, its label and the amount you
+  assigned. Nothing is spendable with that, but treat the label like a public note.

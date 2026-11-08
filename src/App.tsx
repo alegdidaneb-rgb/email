@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertLog } from './components/AlertLog'
 import { Icon } from './components/Icon'
 import { SettingsPanel } from './components/SettingsPanel'
+import { SharePanel } from './components/SharePanel'
 import { WalletCard } from './components/WalletCard'
 import { WalletForm } from './components/WalletForm'
 import {
@@ -15,9 +16,10 @@ import {
   normalizeAddress,
   normalizeAmount,
 } from './lib/eth'
-import { formatCompact, relativeTime, shortenAddress, uid } from './lib/format'
+import { formatAmount, formatCompact, relativeTime, shortenAddress, uid } from './lib/format'
 import { networkOf, NETWORK_LIST } from './lib/networks'
 import { getRpcReports, rpcLabel, type RpcReport } from './lib/transport'
+import { mergeShared, readShare, type ShareBundle } from './lib/share'
 import { capAlerts, capHistory, emptyDb, loadDb, parseDb, saveDb } from './lib/storage'
 import type {
   AlertEntry,
@@ -50,6 +52,9 @@ export default function App() {
   const [rpcReports, setRpcReports] = useState<RpcReport[]>([])
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [reportCopied, setReportCopied] = useState(false)
+  const [shareOpen, setShareOpen] = useState<Wallet[] | null>(null)
+  const [incoming, setIncoming] = useState<ShareBundle | null>(null)
+  const handledShare = useRef<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [filter, setFilter] = useState<Filter>('all')
   const [networkFilter, setNetworkFilter] = useState<NetworkFilter>('all')
@@ -302,6 +307,71 @@ export default function App() {
     commit((prev) => ({ ...prev, wallets: [wallet, ...prev.wallets] }))
     void refresh([wallet.id])
   }
+
+  /* ---------- cross-device share ---------- */
+
+  const dismissIncoming = useCallback(() => {
+    setIncoming(null)
+    handledShare.current = null
+    if (typeof window.history?.replaceState === 'function') {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+    }
+  }, [])
+
+  const applyIncoming = useCallback(
+    (bundle: ShareBundle) => {
+      const { add } = mergeShared(dbRef.current.wallets, bundle.wallets)
+      if (add.length === 0) return
+      const now = Date.now()
+      const wallets: Wallet[] = add.map((shared) => ({
+        id: uid(),
+        address: shared.address,
+        network: shared.network,
+        label: shared.label,
+        note: 'Added from a share link',
+        createdAt: now,
+        expectedNative: shared.expectedNative,
+        lastNative: null,
+        lastCheckedAt: null,
+        status: 'unknown' as const,
+        history: [],
+        tokens: shared.tokens.map((token) => ({
+          id: uid(),
+          tokenAddress: token.address,
+          symbol: token.symbol,
+          decimals: token.decimals,
+          expectedAmount: token.expectedAmount,
+          lastAmount: null,
+          lastCheckedAt: null,
+          status: 'unknown' as const,
+        })),
+      }))
+      commit((prev) => ({ ...prev, wallets: [...wallets, ...prev.wallets] }))
+      void refresh(wallets.map((wallet) => wallet.id))
+    },
+    [commit, refresh],
+  )
+
+  // A share link (or the QR that encodes it) lands here: #i=wv1.…
+  useEffect(() => {
+    function look() {
+      const source = `${window.location.search}${window.location.hash}`
+      if (!source || source === '?') return
+      if (handledShare.current === source) return
+      const bundle = readShare(window.location.search) ?? readShare(window.location.hash)
+      if (!bundle) return
+      handledShare.current = source
+      setIncoming(bundle)
+    }
+    look()
+    window.addEventListener('hashchange', look)
+    return () => window.removeEventListener('hashchange', look)
+  }, [])
+
+  const sharePreview = useMemo(
+    () => (incoming ? mergeShared(db.wallets, incoming.wallets) : null),
+    [incoming, db.wallets],
+  )
 
   const updateWallet = (id: string, patch: Partial<Wallet>) => {
     commit((prev) => {
@@ -577,6 +647,16 @@ export default function App() {
           <button
             type="button"
             className="icon-btn icon-btn-lg"
+            onClick={() => setShareOpen(db.wallets)}
+            disabled={db.wallets.length === 0}
+            aria-label="Share wallets"
+            title="Share / sync with another device"
+          >
+            <Icon name="share" size={17} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn icon-btn-lg"
             onClick={() => setSettingsOpen(true)}
             aria-label="Settings"
             title="Settings"
@@ -782,6 +862,7 @@ export default function App() {
                   onRefresh={() => void refresh([wallet.id])}
                   onUpdate={(patch) => updateWallet(wallet.id, patch)}
                   onRemove={() => removeWallet(wallet)}
+                  onShare={() => setShareOpen([wallet])}
                   onReconcileNative={() => reconcileNative(wallet)}
                   onAddToken={(tokenAddress, amount) => addToken(wallet.id, tokenAddress, amount)}
                   onUpdateToken={(tokenId, patch) => updateToken(wallet.id, tokenId, patch)}
@@ -805,6 +886,80 @@ export default function App() {
           </p>
         </aside>
       </div>
+
+      {shareOpen !== null && shareOpen.length > 0 ? (
+        <SharePanel wallets={shareOpen} onClose={() => setShareOpen(null)} />
+      ) : null}
+
+      {incoming && sharePreview ? (
+        <div className="share-layer" role="dialog" aria-modal="true" aria-label="Add shared wallets">
+          <button
+            type="button"
+            className="share-scrim"
+            onClick={dismissIncoming}
+            aria-label="Close"
+          />
+          <div className="share-card share-card-sm">
+            <header className="share-head">
+              <h2>
+                <Icon name="download" size={16} />
+                {incoming.wallets.length === 1
+                  ? 'Add this shared wallet?'
+                  : `Add ${incoming.wallets.length} shared wallets?`}
+              </h2>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={dismissIncoming}
+                aria-label="Close"
+              >
+                <Icon name="x" size={15} />
+              </button>
+            </header>
+            <div className="share-body">
+              <ul className="share-list">
+                {incoming.wallets.map((wallet, index) => (
+                  <li key={`${wallet.network}:${wallet.address}:${index}`}>
+                    <span>{wallet.label}</span>
+                    <span className="mono">
+                      {networkOf(wallet.network).name} · {formatAmount(wallet.expectedNative)}{' '}
+                      {networkOf(wallet.network).nativeSymbol} assigned
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="share-hint">
+                Labels and assigned amounts travel with the link; balances are read fresh on this
+                device. Nothing is trusted until an RPC endpoint answers.
+              </p>
+              {sharePreview.skipped.length > 0 ? (
+                <p className="share-fine">
+                  {sharePreview.skipped.length} already on your watchlist — those are skipped.
+                </p>
+              ) : null}
+              <div className="share-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    applyIncoming(incoming)
+                    dismissIncoming()
+                  }}
+                  disabled={sharePreview.add.length === 0}
+                >
+                  <Icon name="plus" size={13} />
+                  {sharePreview.add.length === 0
+                    ? 'Nothing new to add'
+                    : `Add ${sharePreview.add.length === 1 ? 'wallet' : `${sharePreview.add.length} wallets`}`}
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={dismissIncoming}>
+                  Not now
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <SettingsPanel
         open={settingsOpen}

@@ -21,6 +21,7 @@ interface Props {
   onRefresh: () => void
   onUpdate: (patch: Partial<Wallet>) => void
   onRemove: () => void
+  onShare: () => void
   onReconcileNative: () => void
   onAddToken: (tokenAddress: string, expectedAmount: string) => Promise<string | null>
   onUpdateToken: (tokenId: string, patch: Partial<TokenHolding>) => void
@@ -43,6 +44,7 @@ export function WalletCard({
   onRefresh,
   onUpdate,
   onRemove,
+  onShare,
   onReconcileNative,
   onAddToken,
   onUpdateToken,
@@ -138,6 +140,15 @@ export function WalletCard({
               {shortenAddress(wallet.address, 10, 8)}
             </span>
             <CopyButton address={wallet.address} />
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={onShare}
+              title="Share this wallet — QR for Trust Wallet, link for another device"
+              aria-label="Share this wallet"
+            >
+              <Icon name="share" size={14} />
+            </button>
             <a
               className="icon-btn"
               href={`${config.explorer}/address/${wallet.address}`}
